@@ -33,7 +33,7 @@ window.APP_CONFIG = {
   // 6. Contact details shown to customers (leave "" to hide any of them)
   PHONE: "",          // shop phone, 10 digits, e.g. "9876543210"
   WHATSAPP: "",       // shop WhatsApp number, 10 digits
-  EMAIL: "dataongole@gmail.com",
+  EMAIL: "",
   ADDRESS: "Ongole, Prakasam District, Andhra Pradesh",
   HOURS: "Mon - Sat: 9:30 AM - 8:30 PM",
   MAP_LINK: "",       // optional Google Maps link to your shop
