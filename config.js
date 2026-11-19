@@ -15,7 +15,7 @@ window.APP_CONFIG = {
   // 2. Google Sign-In "Client ID" (looks like 1234567890-abc123.apps.googleusercontent.com).
   //    Create it in Google Cloud Console - see SETUP-GUIDE.md, Part 2.
   //    Paste the SAME value into apps-script/Code.gs (GOOGLE_CLIENT_ID).
-  GOOGLE_CLIENT_ID: "PASTE_YOUR_GOOGLE_CLIENT_ID_HERE.apps.googleusercontent.com",
+  GOOGLE_CLIENT_ID: "439773724689-sj1744d6adfq7qn7mr1h0nhtqa212j8g.apps.googleusercontent.com",
 
   // 3. Admin e-mails. This list only decides which buttons are SHOWN.
   //    The real security check is the ADMIN_EMAILS list inside apps-script/Code.gs.

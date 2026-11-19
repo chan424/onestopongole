@@ -23,7 +23,7 @@
 var ADMIN_EMAILS = ['dataongole@gmail.com', 'rajub.369@gmail.com'];
 
 // Google Sign-In Client ID (from Google Cloud Console). Must match config.js.
-var GOOGLE_CLIENT_ID = 'PASTE_YOUR_GOOGLE_CLIENT_ID_HERE.apps.googleusercontent.com';
+var GOOGLE_CLIENT_ID = '439773724689-sj1744d6adfq7qn7mr1h0nhtqa212j8g.apps.googleusercontent.com';
 
 // Leave '' if this script was opened from the Sheet (Extensions > Apps Script).
 // Otherwise paste the Sheet ID (the long code in the Sheet's web address).
