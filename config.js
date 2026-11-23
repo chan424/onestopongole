@@ -31,14 +31,20 @@ window.APP_CONFIG = {
   TAGLINE: "One Place. Every IT & Printing Solution.",
 
   // 6. Contact details shown to customers (leave "" to hide any of them)
-  PHONE: "",          // shop phone, 10 digits, e.g. "9876543210"
-  WHATSAPP: "",       // shop WhatsApp number, 10 digits
-  EMAIL: "",
+  PHONE: "9989481720",          // shop phone, 10 digits, e.g. "9876543210"
+  WHATSAPP: "9989481720",       // shop WhatsApp number, 10 digits
+  EMAIL: "rajub.369@gmail.com",
   ADDRESS: "Ongole, Prakasam District, Andhra Pradesh",
   HOURS: "Mon - Sat: 9:30 AM - 8:30 PM",
   MAP_LINK: "",       // optional Google Maps link to your shop
 
-  // 7. Optional UPI ID so customers can pay an advance (leave "" to hide)
-  UPI_ID: "",
-  UPI_NAME: ""
+  // 7. Online payment (optional for customers - Cash on Delivery is always available).
+  //    PHONEPE_NUMBER: the PhonePe mobile number customers pay to (shown on the order form).
+  //    UPI_ID: used for the "Open PhonePe / UPI app" button and the QR code.
+  //      !! CHECK THIS: "9989481720@ybl" is a GUESS. Open PhonePe > profile (top-left) >
+  //      "UPI ID" (or "QR code") and copy the exact UPI ID shown there, e.g. 9989481720@ybl,
+  //      9989481720@ibl or 9989481720@axl. Leave "" to hide the button and QR code.
+  PHONEPE_NUMBER: "9989481720",
+  UPI_ID: "9989481720@ybl",
+  UPI_NAME: "One Stop Ongole"
 };

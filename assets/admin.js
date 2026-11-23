@@ -7,13 +7,18 @@
   var TABS = [['dashboard', 'Dashboard', 'grid'], ['orders', 'Orders', 'list'], ['catalogue', 'Catalogue', 'layers'], ['settings', 'Settings', 'gear']];
   var SETTINGS_FIELDS = [
     ['BUSINESS_NAME', 'Shop name'], ['BUSINESS_SUBTITLE', 'Subtitle'], ['TAGLINE', 'Tagline (hero heading)'], ['PHONE', 'Phone (10 digits)'], ['WHATSAPP', 'WhatsApp (10 digits)'],
-    ['EMAIL', 'Shop e-mail'], ['ADDRESS', 'Address'], ['HOURS', 'Working hours'], ['MAP_LINK', 'Google Maps link'], ['UPI_ID', 'UPI ID'], ['UPI_NAME', 'UPI name'],
+    ['EMAIL', 'Shop e-mail'], ['ADDRESS', 'Address'], ['HOURS', 'Working hours'], ['MAP_LINK', 'Google Maps link'], ['PHONEPE_NUMBER', 'PhonePe number (for payments)'], ['UPI_ID', 'UPI ID (from PhonePe)'], ['UPI_NAME', 'UPI name'],
     ['SITE_URL', 'Website address (for tracking links in e-mails)'], ['ANNOUNCEMENT', 'Announcement bar text (leave empty to hide)'], ['ABOUT', 'About us text', 'textarea']
   ];
   function $(s) { return site.$(s); }
   function seenAt() { var v = App.store.get((App.demo ? 'oss_admin_seen_demo' : 'oss_admin_seen'), null); if (!v) { v = new Date(Date.now() - 86400000).toISOString(); App.store.set((App.demo ? 'oss_admin_seen_demo' : 'oss_admin_seen'), v); } return v; }
   function newOrders() { if (!A.data) return []; var s = seenAt(); return A.data.orders.filter(function (o) { return o.createdAt > s && o.source !== 'admin'; }); }
   function OPEN(o) { return o.status !== 'Completed' && o.status !== 'Cancelled'; }
+  var PAY_STATUSES = ['COD', 'Awaiting payment', 'Paid - pending verification', 'Paid - verified'];
+  function payPill(o) {
+    var s = o.paymentStatus || 'COD', cls = s === 'Paid - verified' ? 'pill-ready' : s === 'Paid - pending verification' ? 'pill-in-progress' : s === 'Awaiting payment' ? 'pill-pending' : 'pill-confirmed';
+    return '<span class="pill ' + cls + '">' + h(s === 'COD' ? 'COD' : s === 'Paid - verified' ? 'Paid' : s === 'Paid - pending verification' ? 'Check UTR' : 'Not paid') + '</span>';
+  }
 
   App.markAdminSeen = function () {
     if (!A || !A.data || !A.data.orders.length) return;
@@ -119,18 +124,18 @@
     return A.data.orders.filter(function (x) {
       if (A.ofilter === 'Open' && !OPEN(x)) return false;
       if (A.ofilter !== 'All' && A.ofilter !== 'Open' && x.status !== A.ofilter) return false;
-      return !q || [x.orderId, x.name, x.mobile, x.email, x.itemName, x.serviceName, x.description].join(' ').toLowerCase().indexOf(q) >= 0;
+      return !q || [x.orderId, x.name, x.mobile, x.email, x.itemName, x.serviceName, x.description, x.paymentRef, x.paymentStatus].join(' ').toLowerCase().indexOf(q) >= 0;
     });
   }
   function renderOrderList() {
     var box = $('#olist'); if (!box) return;
     var list = filteredOrders(), nw = newOrders();
-    box.innerHTML = list.length ? '<table class="rtable"><thead><tr><th>Order</th><th>Customer</th><th>Service</th><th>Status</th><th class="right">Bill</th><th class="right">Paid</th><th>Placed</th><th></th></tr></thead><tbody>' +
+    box.innerHTML = list.length ? '<table class="rtable"><thead><tr><th>Order</th><th>Customer</th><th>Service</th><th>Status</th><th class="right">Bill</th><th class="right">Paid</th><th>Payment</th><th>Placed</th><th></th></tr></thead><tbody>' +
       list.map(function (x) {
         return '<tr data-a="open-order" data-id="' + h(x.orderId) + '"><td data-l="Order"><b>' + h(x.orderId) + '</b>' + (nw.indexOf(x) >= 0 ? ' <span class="badge">New</span>' : '') + '</td>' +
           '<td data-l="Customer">' + h(x.name) + '<small class="muted d-block">' + h(x.mobile) + '</small></td><td data-l="Service">' + h(x.itemName || x.serviceName) + (x.quantity > 1 ? ' <span class="muted">x' + h(x.quantity) + '</span>' : '') + '</td>' +
           '<td data-l="Status">' + App.pill(x.status) + '</td><td data-l="Bill" class="right">' + (x.amountQuoted ? money(x.amountQuoted) : (x.estimate ? '<span class="muted">~' + money(x.estimate) + '</span>' : '-')) + '</td>' +
-          '<td data-l="Paid" class="right">' + (x.amountPaid ? money(x.amountPaid) : '-') + '</td><td data-l="Placed">' + h(App.fmtDate(x.createdAt)) + '</td><td class="right act-c"><span class="btn ghost sm">Open</span></td></tr>';
+          '<td data-l="Paid" class="right">' + (x.amountPaid ? money(x.amountPaid) : '-') + '</td><td data-l="Payment">' + payPill(x) + (x.paymentRef ? '<small class="muted d-block">UTR ' + h(x.paymentRef) + '</small>' : '') + '</td><td data-l="Placed">' + h(App.fmtDate(x.createdAt)) + '</td><td class="right act-c"><span class="btn ghost sm">Open</span></td></tr>';
       }).join('') + '</tbody></table>' : '<div class="empty">' + icon('list', 28) + '<p>No orders match.</p></div>';
   }
   function byId(id) { for (var i = 0; i < A.data.orders.length; i++) if (A.data.orders[i].orderId === id) return A.data.orders[i]; return null; }
@@ -148,7 +153,8 @@
       '<div class="row">' + (mob ? '<a class="btn ghost sm" href="tel:+91' + h(mob) + '">' + icon('phone', 15) + ' Call</a><a class="btn wa sm" target="_blank" rel="noopener" href="' + h(App.waLink(mob, waStatusText(o))) + '">' + icon('chat', 15) + ' WhatsApp customer</a>' : '') +
       (o.email ? '<a class="btn ghost sm" href="mailto:' + h(o.email) + '?subject=' + encodeURIComponent('Order ' + o.orderId) + '">' + icon('mail', 15) + ' E-mail</a>' : '') +
       (o.trackKey ? '<button class="btn ghost sm" data-copy="' + h(site.trackLink(o.orderId, o.trackKey)) + '">' + icon('link', 15) + ' Tracking link</button>' : '') + '</div>' +
-      '<dl class="kv"><dt>Service</dt><dd>' + h(o.itemName || '-') + '<small class="muted d-block">' + h(o.serviceName) + '</small></dd><dt>Quantity</dt><dd>' + h(o.quantity) + (o.unitPrice ? ' × ' + money(o.unitPrice) + ' ' + h(o.unit) : '') + '</dd>' +
+      '<dl class="kv"><dt>Payment</dt><dd>' + payPill(o) + ' ' + h(o.paymentMethod === 'PhonePe' ? 'PhonePe / UPI' : 'Cash on Delivery') + (o.paymentRef ? '<small class="muted d-block">UTR / transaction no: <b>' + h(o.paymentRef) + '</b></small>' : '') + '</dd>' +
+      '<dt>Service</dt><dd>' + h(o.itemName || '-') + '<small class="muted d-block">' + h(o.serviceName) + '</small></dd><dt>Quantity</dt><dd>' + h(o.quantity) + (o.unitPrice ? ' × ' + money(o.unitPrice) + ' ' + h(o.unit) : '') + '</dd>' +
       (o.estimate ? '<dt>Estimate</dt><dd>' + money(o.estimate) + '</dd>' : '') + (o.description ? '<dt>Work</dt><dd>' + App.nl2br(o.description) + '</dd>' : '') +
       (o.preferredDate ? '<dt>Preferred</dt><dd>' + h(App.fmtDate(o.preferredDate)) + ' ' + h(App.fmtClock(o.preferredTime)) + '</dd>' : '') + (o.address ? '<dt>Address</dt><dd>' + h(o.address) + '</dd>' : '') +
       (o.customerEmail ? '<dt>Signed in as</dt><dd>' + h(o.customerEmail) + '</dd>' : '') + '</dl><h4 class="sub-h">Timeline</h4>' + site.timeline(o.timeline || []) + '</div>' +
@@ -157,6 +163,8 @@
       }).join('') + '</div></div>' +
       '<div class="grid2 keep"><div class="field"><label for="u-bill">Bill amount (₹)</label><input class="input" id="u-bill" type="number" min="0" step="1" inputmode="decimal" value="' + (o.amountQuoted || '') + '" placeholder="' + (o.estimate || '') + '"></div>' +
       '<div class="field"><label for="u-paid">Total paid (₹)</label><input class="input" id="u-paid" type="number" min="0" step="1" inputmode="decimal" value="' + (o.amountPaid || '') + '"></div></div>' +
+      '<div class="field"><label for="u-pay">Payment status</label><select class="input" id="u-pay">' + PAY_STATUSES.map(function (s) { return '<option value="' + h(s) + '"' + ((o.paymentStatus || 'COD') === s ? ' selected' : '') + '>' + h(s === 'COD' ? 'COD - not paid yet' : s === 'Paid - verified' ? 'Paid (verified)' : s) + '</option>'; }).join('') + '</select>' +
+        (o.paymentRef ? '<p class="hint">Check UTR <b>' + h(o.paymentRef) + '</b> in your PhonePe app, then choose "Paid (verified)" and fill "Total paid".</p>' : '') + '</div>' +
       '<div class="field"><label for="u-msg">Message to customer <span class="opt">(optional)</span></label><textarea class="input" id="u-msg" maxlength="1000" placeholder="e.g. Your laptop is ready. Please collect after 5 PM."></textarea></div>' +
       '<label class="check"><input type="checkbox" id="u-notify" checked> E-mail the customer about this update' + (o.email || o.customerEmail ? '' : ' <span class="muted">(no e-mail on this order)</span>') + '</label>' +
       '<label class="check"><input type="checkbox" id="u-internal"> Internal note only (customer will not see the message)</label>' +
@@ -173,7 +181,8 @@
     if (paid !== '' && Number(paid) !== Number(o.amountPaid)) { if (!(Number(paid) >= 0)) return ($('#u-err').textContent = 'Paid amount is not valid.'); p.amountPaid = Number(paid); }
     if (msg) p.message = msg;
     if (notes !== (o.adminNotes || '')) p.adminNotes = notes;
-    if (Object.keys(p).length <= 4) return ($('#u-err').textContent = 'Nothing changed. Change the status, amounts, notes or type a message.');
+    var pay = $('#u-pay') ? $('#u-pay').value : ''; if (pay && pay !== (o.paymentStatus || 'COD')) p.paymentStatus = pay;
+    if (Object.keys(p).length <= 4) return ($('#u-err').textContent = 'Nothing changed. Change the status, payment, amounts, notes or type a message.');
     var btn = $('#u-save'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Saving...';
     App.api('updateOrder', p).then(function (no) {
       for (var i = 0; i < A.data.orders.length; i++) if (A.data.orders[i].orderId === no.orderId) A.data.orders[i] = no;
@@ -212,7 +221,7 @@
     }, function (e) { btn.disabled = false; btn.innerHTML = icon('check', 18) + ' Create order'; $('#n-err').textContent = e.message; });
   }
   function exportCsv() {
-    var cols = ['orderId', 'createdAt', 'status', 'name', 'mobile', 'email', 'serviceName', 'itemName', 'quantity', 'estimate', 'amountQuoted', 'amountPaid', 'balance', 'description', 'address', 'adminNotes'];
+    var cols = ['orderId', 'createdAt', 'status', 'name', 'mobile', 'email', 'serviceName', 'itemName', 'quantity', 'estimate', 'amountQuoted', 'amountPaid', 'balance', 'paymentMethod', 'paymentStatus', 'paymentRef', 'description', 'address', 'adminNotes'];
     var cell = function (v) { v = String(v === null || v === undefined ? '' : v); if (/^[=+\-@]/.test(v)) v = "'" + v; return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     var csv = [cols.join(',')].concat(filteredOrders().map(function (o) { return cols.map(function (c) { return cell(o[c]); }).join(','); })).join('\r\n');
     var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' })); a.download = 'orders-' + App.ymd(new Date()) + '.csv';
@@ -233,7 +242,7 @@
           '<button class="icon-btn sm" data-a="cat-toggle" data-i="' + i + '" title="' + (c.active === false ? 'Show' : 'Hide') + '">' + icon(c.active === false ? 'eyeoff' : 'eye', 16) + '</button><button class="icon-btn sm" data-a="cat-edit" data-i="' + i + '" title="Edit">' + icon('edit', 16) + '</button>' +
           '<button class="icon-btn sm danger" data-a="cat-del" data-i="' + i + '" title="Delete">' + icon('trash', 16) + '</button></div></li>';
       }).join('') + '</ul></div>' +
-      '<div class="card pad"><h3 class="card-t">Services &amp; prices <button class="btn sm" data-a="item-add">' + icon('plus', 15) + ' Add service</button></h3>' +
+      '<div class="card pad"><h3 class="card-t">Services &amp; prices <span class="row"><button class="btn ghost sm" data-a="bulk-open">' + icon('download', 15) + ' Bulk upload (Excel / paste)</button><button class="btn sm" data-a="item-add">' + icon('plus', 15) + ' Add service</button></span></h3>' +
       '<div class="toolbar"><select class="input sm-in" id="a-ccat"><option value="all">All categories (' + d.items.length + ')</option>' + d.categories.map(function (c) { return '<option value="' + h(c.id) + '"' + (A.ccat === c.id ? ' selected' : '') + '>' + h(c.name) + '</option>'; }).join('') + '</select>' +
       '<label class="search">' + icon('search', 18) + '<input id="a-cq" type="search" placeholder="Search services..." value="' + h(A.cq || '') + '"></label></div><div id="citems"></div></div></div>';
   }
@@ -302,6 +311,177 @@
   }
   function root() { return document.getElementById('app'); }
 
+  /* ============================== bulk upload (Excel / CSV / paste) ============================== */
+  // Columns of the bulk-upload template (assets/items-template.csv / "Excel template" button). Only Item Name, Category and Price are required.
+  var BULK_COLS = [
+    ['name', 'Item Name', /^(item|service|product)?\s*name$|^item$|^service$/],
+    ['category', 'Category', /^categ/],
+    ['price', 'Price (Rs)', /price|cost|rate|amount|₹/],
+    ['unit', 'Unit', /^unit|^per$/],
+    ['active', 'Available (Yes/No)', /avail|stock|active|visible|show/],
+    ['desc', 'Description', /^desc|details/],
+    ['popular', 'Popular (Yes/No)', /popular/],
+    ['onsite', 'On-site (Yes/No)', /on.?site/]
+  ];
+  var SHEETJS = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+  var xlsxLib = null;
+  function loadXlsx() {
+    if (window.XLSX) return Promise.resolve(window.XLSX);
+    if (!xlsxLib) xlsxLib = new Promise(function (ok, no) {
+      var sc = document.createElement('script'); sc.src = SHEETJS; sc.onload = function () { ok(window.XLSX); }; sc.onerror = function () { xlsxLib = null; no(new Error('Could not load the Excel reader. Check your internet, or save the file as CSV / paste the rows instead.')); };
+      document.head.appendChild(sc);
+    });
+    return xlsxLib;
+  }
+  // CSV / tab-separated text -> rows of cells (handles "quoted, values")
+  function parseText(text) {
+    text = String(text || '').replace(/^\ufeff/, '').replace(/\r\n?/g, '\n');
+    var first = text.split('\n')[0] || '', sep = first.indexOf('\t') >= 0 ? '\t' : (first.split(';').length > first.split(',').length ? ';' : ',');
+    var rows = [], row = [], cell = '', q = false;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text.charAt(i);
+      if (q) { if (ch === '"') { if (text.charAt(i + 1) === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+      else if (ch === '"' && cell === '') q = true;
+      else if (ch === sep) { row.push(cell); cell = ''; }
+      else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else cell += ch;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+  function yesNo(v) {
+    var t = String(v === undefined || v === null ? '' : v).trim().toLowerCase();
+    if (t === '') return '';
+    if (/^(y|yes|true|1|available|in stock|show|visible)$/.test(t)) return true;
+    if (/^(n|no|false|0|not available|out of stock|hide|hidden)$/.test(t)) return false;
+    return null;   // not understood
+  }
+  // rows of cells -> checked items for the preview
+  function rowsToItems(rows) {
+    rows = rows.filter(function (r) { return r && r.some(function (c) { return String(c === undefined || c === null ? '' : c).trim() !== ''; }); });
+    if (!rows.length) return [];
+    var map = BULK_COLS.map(function (c, i) { return i; }), head = rows[0].map(function (c) { return String(c || '').trim().toLowerCase(); });
+    var hasHead = head.some(function (c) { return /name|categ|price|cost/.test(c); }) && !head.some(function (c) { return /^\s*[₹rs.\s]*[\d,]+(\.\d+)?\s*$/.test(c); });
+    if (hasHead) {
+      map = BULK_COLS.map(function (c) { for (var i = 0; i < head.length; i++) if (c[2].test(head[i])) return i; return -1; });
+      if (map[0] < 0) map[0] = head.findIndex(function (x) { return /name|item|service/.test(x); });
+      rows = rows.slice(1);
+    }
+    var cats = A.data.catalogue.categories, items = A.data.catalogue.items, seen = {};
+    return rows.map(function (r, n) {
+      var g = function (k) { var i = map[k]; var v = i >= 0 ? r[i] : ''; return String(v === undefined || v === null ? '' : v).trim(); };
+      var it = { line: n + 1 + (hasHead ? 1 : 0), name: g(0), category: g(1), unit: g(3), desc: g(5), errs: [] };
+      var pr = g(2).replace(/[₹,\s]|rs\.?|inr|\/-/gi, '');
+      it.price = pr === '' ? NaN : Number(pr);
+      ['active', 'popular', 'onsite'].forEach(function (k, j) { var v = yesNo(g([4, 6, 7][j])); if (v === null) it.errs.push(BULK_COLS[[4, 6, 7][j]][1] + ' must be Yes or No'); else it[k] = v; });
+      if (it.name.length < 2) it.errs.push('Item name missing');
+      if (!it.category) it.errs.push('Category missing');
+      if (!(it.price >= 0)) it.errs.push('Price must be a number');
+      var key = it.name.toLowerCase();
+      if (seen[key]) it.errs.push('Same name as line ' + seen[key]); else seen[key] = it.line;
+      it.isNewCat = !!it.category && !cats.some(function (c) { return c.name.toLowerCase() === it.category.toLowerCase() || c.id.toLowerCase() === it.category.toLowerCase(); });
+      it.isUpdate = items.some(function (x) { return String(x.name).toLowerCase() === key; });
+      return it;
+    });
+  }
+  function bulkModal() {
+    if (A.dirty) { App.toast('Please save or discard your catalogue changes first.', 'err'); return; }
+    A.bulk = A.bulk || { rows: [], text: '' };
+    App.modal('<div class="modal-h"><h3>Bulk upload items &amp; prices</h3><button class="icon-btn" data-act="close" aria-label="Close">' + icon('x', 22) + '</button></div><div class="modal-b bulk">' +
+      '<p class="muted small">Add many services at once. A row whose <b>Item Name</b> already exists updates that service (price, category and the other filled columns); other rows are added as new services. A new category name creates a new category.</p>' +
+      '<div class="note"><span>' + icon('info', 16) + ' Columns: <b>' + BULK_COLS.map(function (c) { return h(c[1]); }).join(', ') + '</b>. Only the first three are required.</span>' +
+      '<span class="row"><button class="btn ghost sm" type="button" data-a="bulk-template">' + icon('download', 15) + ' Excel template</button><a class="btn ghost sm" href="assets/items-template.csv" download>' + icon('download', 15) + ' CSV template</a><button class="btn ghost sm" type="button" data-a="bulk-export">' + icon('download', 15) + ' Current price list</button></span></div>' +
+      '<div class="grid2"><div class="field"><label for="b-file">1. Upload an Excel or CSV file</label><input class="input" id="b-file" type="file" accept=".xlsx,.xls,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"></div>' +
+      '<div class="field"><label for="b-text">2. ...or paste rows (copy from Excel / Google Sheets)</label><textarea class="input" id="b-text" rows="4" placeholder="Item Name\tCategory\tPrice (Rs)\tUnit\nColour print (A3)\tPrinting (B/W &amp; Colour)\t30\tper page">' + h(A.bulk.text) + '</textarea><button class="btn ghost sm" type="button" data-a="bulk-paste" style="margin-top:8px">' + icon('check', 15) + ' Check pasted rows</button></div></div>' +
+      '<div class="err" id="b-err"></div><div id="b-prev"></div></div>', 'wide');
+    renderBulkPreview();
+  }
+  function renderBulkPreview() {
+    var box = $('#b-prev'); if (!box) return;
+    var rows = A.bulk.rows; if (!rows.length) { box.innerHTML = ''; return; }
+    var ok = rows.filter(function (r) { return !r.errs.length; }), bad = rows.length - ok.length;
+    var nAdd = ok.filter(function (r) { return !r.isUpdate; }).length, nUpd = ok.length - nAdd;
+    var newCats = {}; ok.forEach(function (r) { if (r.isNewCat) newCats[r.category] = 1; });
+    var yn = function (v) { return v === '' || v === undefined ? '<span class="muted">-</span>' : v ? 'Yes' : 'No'; };
+    box.innerHTML = '<h4 class="sub-h">Preview: ' + rows.length + ' rows - <span class="ok-t">' + nAdd + ' new</span>, <span class="ok-t">' + nUpd + ' update</span>' + (bad ? ', <span class="bad-t">' + bad + ' with errors (will be skipped)</span>' : '') + '</h4>' +
+      (Object.keys(newCats).length ? '<p class="hint">New categories will be created: ' + Object.keys(newCats).map(h).join(', ') + '</p>' : '') +
+      '<div class="prev-wrap"><table class="rtable bulk-t"><thead><tr><th>#</th><th>Item name</th><th>Category</th><th class="right">Price</th><th>Unit</th><th>Available</th><th>Result</th></tr></thead><tbody>' +
+      rows.map(function (r) {
+        return '<tr class="' + (r.errs.length ? 'bad-r' : '') + '"><td data-l="Line">' + r.line + '</td><td data-l="Item"><b>' + h(r.name || '-') + '</b>' + (r.desc ? '<small class="muted d-block">' + h(r.desc) + '</small>' : '') + '</td>' +
+          '<td data-l="Category">' + h(r.category || '-') + (r.isNewCat ? ' <span class="tag">new</span>' : '') + '</td><td data-l="Price" class="right">' + (r.price >= 0 ? money(r.price) : '-') + '</td><td data-l="Unit">' + h(r.unit || '-') + '</td><td data-l="Available">' + yn(r.active) + '</td>' +
+          '<td data-l="Result">' + (r.errs.length ? '<span class="bad-t">' + h(r.errs.join('; ')) + '</span>' : r.isUpdate ? '<span class="tag">Update</span>' : '<span class="tag pop">New</span>') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div class="row end" style="margin-top:14px"><button class="btn ghost" data-a="bulk-clear">Clear</button><button class="btn green" data-a="bulk-save"' + (ok.length ? '' : ' disabled') + '>' + icon('check', 17) + ' Save ' + ok.length + ' item' + (ok.length === 1 ? '' : 's') + ' to website</button></div>';
+  }
+  function bulkFile(file) {
+    var err = $('#b-err'); err.textContent = '';
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { err.textContent = 'The file is too big (5 MB at most).'; return; }
+    var isCsv = /\.(csv|txt)$/i.test(file.name);
+    var rd = new FileReader();
+    rd.onload = function () {
+      if (isCsv) { A.bulk.rows = rowsToItems(parseText(rd.result)); return afterParse(); }
+      loadXlsx().then(function (X) {
+        var wb = X.read(new Uint8Array(rd.result), { type: 'array' });
+        var name = wb.SheetNames.filter(function (n) { return !/instruction|help|read ?me/i.test(n); })[0] || wb.SheetNames[0];
+        A.bulk.rows = rowsToItems(X.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' })); afterParse();
+      }).catch(function (e) { err.textContent = e.message || 'Could not read this file.'; });
+    };
+    rd.onerror = function () { err.textContent = 'Could not read this file.'; };
+    if (isCsv) rd.readAsText(file); else rd.readAsArrayBuffer(file);
+  }
+  function afterParse() {
+    if (!A.bulk.rows.length) $('#b-err').textContent = 'No rows found. Use the template columns: ' + BULK_COLS.slice(0, 3).map(function (c) { return c[1]; }).join(', ') + '.';
+    renderBulkPreview();
+  }
+  function bulkSave() {
+    var ok = A.bulk.rows.filter(function (r) { return !r.errs.length; });
+    var rows = ok.map(function (r) { var o = { name: r.name, category: r.category, price: r.price, unit: r.unit, desc: r.desc }; ['active', 'popular', 'onsite'].forEach(function (k) { if (r[k] !== '' && r[k] !== undefined) o[k] = r[k]; }); return o; });
+    var btn = root().querySelector('[data-a="bulk-save"]'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Saving...';
+    var done = function (r) {
+      A.data.catalogue = r.catalogue; A.draft = JSON.parse(JSON.stringify(r.catalogue)); A.dirty = false; A.bulk = null;
+      App.closeModal(); App.toast('Saved: ' + r.added + ' new, ' + r.updated + ' updated' + (r.newCategories.length ? ', ' + r.newCategories.length + ' new categor' + (r.newCategories.length > 1 ? 'ies' : 'y') : '') + '.');
+      site.refreshPublic().then(function () { App.renderAdmin(); });
+    };
+    App.api('bulkUpsertItems', { rows: rows }).then(done, function (e) {
+      if (e.code !== 'OLD_BACKEND') { btn.disabled = false; btn.innerHTML = icon('check', 17) + ' Try again'; $('#b-err').textContent = e.message; return; }
+      // backend not redeployed yet: merge here and save the whole catalogue (same result)
+      var m = window.DemoBackend.mergeItems(A.data.catalogue, rows);
+      App.api('saveCatalogue', { categories: m.catalogue.categories, items: m.catalogue.items }).then(function (cat) { m.catalogue = cat; done(m); },
+        function (e2) { btn.disabled = false; btn.innerHTML = icon('check', 17) + ' Try again'; $('#b-err').textContent = e2.message; });
+    });
+  }
+  // Excel template, made in the browser (same columns and samples as assets/items-template.csv)
+  function bulkTemplate() {
+    var data = [BULK_COLS.map(function (c) { return c[1]; }),
+      ['B/W xerox (A4)', 'Xerox & Binding', 2, 'per page', 'Yes', 'Single side. Both sides Rs 3.', 'Yes', 'No'],
+      ['Colour print (A3)', 'Printing (B/W & Colour)', 30, 'per page', 'Yes', 'High quality colour on 130 GSM paper.', 'No', 'No'],
+      ['Wi-Fi router setup', 'Networking & Wi-Fi', 300, 'per router', 'Yes', 'Router configuration and password security.', 'Yes', 'Yes'],
+      ['USB pen drive 32 GB', 'Accessories', 450, 'per item', 'Yes', 'New category example: this creates "Accessories".', 'No', 'No']];
+    var help = [['How to fill the "Items" sheet'], [''],
+      ['Item Name', 'Required. If the name already exists on the website, that item is UPDATED; otherwise it is ADDED.'],
+      ['Category', 'Required. Existing category name (' + A.data.catalogue.categories.map(function (c) { return c.name; }).join(', ') + '). A new name creates a new category.'],
+      ['Price (Rs)', 'Required. Number only, e.g. 250.'], ['Unit', 'Optional, e.g. per page, per item, per device, per visit.'],
+      ['Available (Yes/No)', 'Optional. No = hidden from the website. Empty = Yes for new items / unchanged for existing ones.'],
+      ['Description', 'Optional. Short text shown under the name.'], ['Popular (Yes/No)', 'Optional. Yes shows a "Popular" tag.'],
+      ['On-site (Yes/No)', 'Optional. Yes asks the customer for an address.'], [''],
+      ['Delete the sample rows before uploading. Only the "Items" sheet is read.'], ['Upload: Admin > Catalogue > Bulk upload (Excel / paste).']];
+    loadXlsx().then(function (X) {
+      var ws = X.utils.aoa_to_sheet(data); ws['!cols'] = [{ wch: 40 }, { wch: 28 }, { wch: 11 }, { wch: 16 }, { wch: 18 }, { wch: 60 }, { wch: 16 }, { wch: 16 }];
+      var hs = X.utils.aoa_to_sheet(help); hs['!cols'] = [{ wch: 22 }, { wch: 110 }];
+      var wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, 'Items'); X.utils.book_append_sheet(wb, hs, 'Instructions'); X.writeFile(wb, 'items-template.xlsx');
+    }).catch(function (e) { App.toast(e.message, 'err'); });
+  }
+  function bulkExport() {
+    var cat = A.data.catalogue, name = function (id) { var c = cat.categories.filter(function (x) { return x.id === id; })[0]; return c ? c.name : id; };
+    var yn = function (v) { return v ? 'Yes' : 'No'; };
+    var data = [BULK_COLS.map(function (c) { return c[1]; })].concat(cat.items.map(function (i) { return [i.name, name(i.category), Number(i.price) || 0, i.unit || '', yn(i.active !== false), i.desc || '', yn(i.popular), yn(i.onsite)]; }));
+    loadXlsx().then(function (X) {
+      var ws = X.utils.aoa_to_sheet(data); ws['!cols'] = [{ wch: 40 }, { wch: 28 }, { wch: 11 }, { wch: 16 }, { wch: 18 }, { wch: 60 }, { wch: 16 }, { wch: 16 }];
+      var wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, 'Items'); X.writeFile(wb, 'price-list-' + App.ymd(new Date()) + '.xlsx');
+    }).catch(function (e) { App.toast(e.message, 'err'); });
+  }
+
   /* ============================== settings ============================== */
   function settingsTab() {
     var S = site.S(), s = A.data.settings || {}, ch = A.data.channels || {};
@@ -352,6 +532,12 @@
       case 'item-edit': itemModal(i); break;
       case 'item-del': if (window.confirm('Delete "' + d.items[i].name + '"?')) { d.items.splice(i, 1); dirty(); } break;
       case 'cat-save': saveCatalogue(); break;
+      case 'bulk-open': bulkModal(); break;
+      case 'bulk-paste': A.bulk.text = $('#b-text').value; $('#b-err').textContent = ''; A.bulk.rows = rowsToItems(parseText(A.bulk.text)); afterParse(); break;
+      case 'bulk-clear': A.bulk = { rows: [], text: '' }; bulkModal(); break;
+      case 'bulk-save': bulkSave(); break;
+      case 'bulk-export': bulkExport(); break;
+      case 'bulk-template': bulkTemplate(); break;
       case 'cat-discard': A.draft = JSON.parse(JSON.stringify(A.data.catalogue)); A.dirty = false; App.renderAdmin(); break;
       case 'test-mail': App.api('testNotify', {}).then(function (r) { App.toast('Test e-mail sent to ' + r.sentTo + (App.demo ? ' (demo)' : '')); if (App.demo) App.loadAdmin(true); }, function (e) { App.toast(e.message, 'err'); }); break;
       case 'demo-reset': if (window.confirm('Reset all demo orders and catalogue?')) { window.DemoBackend.reset(); App.store.del('oss_public_cache_demo'); App.store.del((App.demo ? 'oss_admin_seen_demo' : 'oss_admin_seen')); location.reload(); } break;
@@ -361,6 +547,7 @@
     var t = ev.target, a2 = t.getAttribute('data-a2');
     if (a2 === 'item-active' || a2 === 'item-popular') { var it = A.draft.items[Number(t.getAttribute('data-i'))]; if (a2 === 'item-active') it.active = t.checked; else it.popular = t.checked; dirty(); return; }
     if (t.id === 'a-ccat') { A.ccat = t.value; renderCatItems(); return; }
+    if (t.id === 'b-file') { bulkFile(t.files && t.files[0]); t.value = ''; return; }
     if (t.name === 'u-status') { document.querySelectorAll('.status-pick .sp').forEach(function (l) { l.classList.toggle('on', l.querySelector('input').checked); }); return; }
     if (t.name === 'c-icon' || t.name === 'c-tone') { document.querySelectorAll('input[name="' + t.name + '"]').forEach(function (r) { r.parentNode.classList.toggle('on', r.checked); }); }
   };

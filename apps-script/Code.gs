@@ -55,14 +55,16 @@ var EMAIL_CUSTOMER_ON_STATUS_CHANGE = true;
 
 /* -------------------- 2. NOTHING TO CHANGE BELOW -------------------- */
 
-var VERSION = '2.0';
+var VERSION = '2.1';
 var STATUSES = ['Pending', 'Confirmed', 'In Progress', 'Ready', 'Completed', 'Cancelled'];
+var PAY_METHODS = ['COD', 'PhonePe'];
+var PAY_STATUSES = ['COD', 'Awaiting payment', 'Paid - pending verification', 'Paid - verified'];
 var ORDER_COLS = ['orderId', 'createdAt', 'updatedAt', 'status', 'service', 'serviceName', 'itemId', 'itemName', 'unitPrice', 'unit',
   'quantity', 'estimate', 'description', 'preferredDate', 'preferredTime', 'address', 'name', 'mobile', 'email', 'customerEmail',
-  'source', 'amountQuoted', 'amountPaid', 'adminNotes', 'timeline', 'trackKey', 'clientRef'];
+  'source', 'amountQuoted', 'amountPaid', 'adminNotes', 'timeline', 'trackKey', 'clientRef', 'paymentMethod', 'paymentStatus', 'paymentRef'];
 var CAT_COLS = ['type', 'id', 'category', 'name', 'price', 'unit', 'desc', 'icon', 'tone', 'order', 'active', 'popular', 'onsite'];
 var SETTING_KEYS = ['BUSINESS_NAME', 'BUSINESS_SUBTITLE', 'TAGLINE', 'PHONE', 'WHATSAPP', 'EMAIL', 'ADDRESS', 'HOURS', 'MAP_LINK',
-  'UPI_ID', 'UPI_NAME', 'ABOUT', 'ANNOUNCEMENT', 'SITE_URL'];
+  'UPI_ID', 'UPI_NAME', 'PHONEPE_NUMBER', 'ABOUT', 'ANNOUNCEMENT', 'SITE_URL'];
 
 /* ---------- entry points ---------- */
 function doGet(e) {
@@ -81,10 +83,12 @@ function doPost(e) {
       case 'whoami': return whoami_(p);
       case 'createOrder': return createOrder_(p);
       case 'trackOrder': return trackOrder_(p);
+      case 'submitPayment': return submitPayment_(p);
       case 'myOrders': return myOrders_(p);
       case 'adminData': requireAdmin_(p); return adminData_();
       case 'updateOrder': return updateOrder_(p, requireAdmin_(p));
       case 'saveCatalogue': requireAdmin_(p); return saveCatalogue_(p);
+      case 'bulkUpsertItems': requireAdmin_(p); return bulkUpsertItems_(p);
       case 'saveSettings': requireAdmin_(p); return saveSettings_(p);
       case 'testNotify': return testNotify_(requireAdmin_(p));
       default: throw err_('INVALID', 'Unknown action: ' + p.action);
@@ -257,6 +261,56 @@ function saveCatalogue_(p) {
   withLock_(function () { writeCatalogue_(clean); });
   return readCatalogue_();
 }
+/**
+ * Bulk add / update services from the admin's Excel upload or paste.
+ * p.rows = [{ name, category, price, unit, active, desc, popular, onsite }]
+ * Matches an existing service by name (not case-sensitive) and updates it; otherwise adds it.
+ * A category is matched by name or id; a new category name creates a new category.
+ */
+function bulkUpsertItems_(p) {
+  var rows = Array.isArray(p.rows) ? p.rows : [];
+  if (!rows.length) throw err_('INVALID', 'No rows to save.');
+  if (rows.length > 500) throw err_('INVALID', 'Too many rows (500 at most).');
+  return withLock_(function () {
+    var cat = readCatalogue_(), added = 0, updated = 0, newCats = [];
+    var tones = ['blue', 'green', 'indigo', 'violet', 'red', 'purple', 'orange', 'teal'];
+    function findCat(v) {
+      var k = str_(v, 80).toLowerCase();
+      for (var i = 0; i < cat.categories.length; i++) if (cat.categories[i].name.toLowerCase() === k || cat.categories[i].id.toLowerCase() === k) return cat.categories[i];
+      return null;
+    }
+    rows.forEach(function (r, n) {
+      var name = str_(r.name, 120), cname = str_(r.category, 80), price = Number(r.price);
+      if (name.length < 2) throw err_('INVALID', 'Row ' + (n + 1) + ': item name is missing.');
+      if (!cname) throw err_('INVALID', 'Row ' + (n + 1) + ' (' + name + '): category is missing.');
+      if (!(isFinite(price) && price >= 0)) throw err_('INVALID', 'Row ' + (n + 1) + ' (' + name + '): price is not a number.');
+      var c = findCat(cname);
+      if (!c) {
+        var id = cname.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || ('cat' + (cat.categories.length + 1));
+        while (cat.categories.some(function (x) { return x.id === id; })) id += '1';
+        c = { id: id, name: cname, desc: '', icon: 'layers', tone: tones[cat.categories.length % tones.length], order: cat.categories.length + 1, active: true };
+        cat.categories.push(c); newCats.push(cname);
+      }
+      var it = null, key = name.toLowerCase();
+      cat.items.forEach(function (x) { if (x.name.toLowerCase() === key) it = x; });
+      var v = { category: c.id, name: name, price: Math.round(price * 100) / 100 };
+      if (r.unit !== undefined && str_(r.unit)) v.unit = str_(r.unit, 40);
+      if (r.desc !== undefined && str_(r.desc)) v.desc = str_(r.desc, 600);
+      if (r.active !== undefined && r.active !== '') v.active = r.active !== false && r.active !== 'false';
+      if (r.popular !== undefined && r.popular !== '') v.popular = r.popular === true || r.popular === 'true';
+      if (r.onsite !== undefined && r.onsite !== '') v.onsite = r.onsite === true || r.onsite === 'true';
+      if (it) { Object.assign(it, v); updated++; }
+      else {
+        cat.items.push(Object.assign({ id: c.id.slice(0, 3) + '-' + key.replace(/[^a-z0-9]+/g, '-').slice(0, 18) + '-' + Utilities.getUuid().slice(0, 4),
+          unit: 'per item', desc: '', active: true, popular: false, onsite: false }, v));
+        added++;
+      }
+    });
+    if (cat.categories.length > 50 || cat.items.length > 500) throw err_('INVALID', 'Catalogue is too big (50 categories / 500 services at most).');
+    writeCatalogue_(cat);
+    return { catalogue: readCatalogue_(), added: added, updated: updated, newCategories: newCats };
+  });
+}
 function readSettings_() {
   var out = {};
   readRows_(sheet_('Settings', ['key', 'value'])).forEach(function (r) { if (SETTING_KEYS.indexOf(String(r.key)) >= 0) out[r.key] = str_(r.value, 2000); });
@@ -289,7 +343,7 @@ function ordersSheet_() {
   var props = PropertiesService.getScriptProperties();
   if (props.getProperty('ORDERS_FMT') !== VERSION) {
     var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
-    ['orderId', 'createdAt', 'updatedAt', 'preferredDate', 'preferredTime', 'mobile', 'trackKey', 'clientRef', 'timeline'].forEach(function (k) {
+    ['orderId', 'createdAt', 'updatedAt', 'preferredDate', 'preferredTime', 'mobile', 'trackKey', 'clientRef', 'timeline', 'paymentRef'].forEach(function (k) {
       var c = head.indexOf(k); if (c >= 0) sh.getRange(2, c + 1, sh.getMaxRows() - 1, 1).setNumberFormat('@');
     });
     props.setProperty('ORDERS_FMT', VERSION);
@@ -309,13 +363,15 @@ function rowToOrder_(r) {
     quantity: num_(r.quantity) || 1, estimate: num_(r.estimate), description: str_(r.description, 3000), preferredDate: dateOnly_(r.preferredDate), preferredTime: timeOnly_(r.preferredTime),
     address: str_(r.address), name: str_(r.name), mobile: str_(r.mobile), email: str_(r.email), customerEmail: str_(r.customerEmail), source: str_(r.source) || 'website',
     amountQuoted: quoted, amountPaid: paid, balance: Math.max(0, quoted - paid), adminNotes: str_(r.adminNotes, 3000),
-    timeline: parseTimeline_(r.timeline), trackKey: str_(r.trackKey), _row: r._row
+    timeline: parseTimeline_(r.timeline), trackKey: str_(r.trackKey), _row: r._row,
+    paymentMethod: str_(r.paymentMethod) || 'COD', paymentStatus: str_(r.paymentStatus) || 'COD', paymentRef: str_(r.paymentRef, 60)
   };
 }
 function publicOrder_(o) {
   return { orderId: o.orderId, createdAt: o.createdAt, updatedAt: o.updatedAt, status: o.status, service: o.serviceName, itemName: o.itemName, unitPrice: o.unitPrice,
     unit: o.unit, quantity: o.quantity, estimate: o.estimate, description: o.description, preferredDate: o.preferredDate, preferredTime: o.preferredTime,
     amountQuoted: o.amountQuoted, amountPaid: o.amountPaid, balance: o.balance, trackKey: o.trackKey,
+    paymentMethod: o.paymentMethod, paymentStatus: o.paymentStatus, paymentRef: o.paymentRef,
     timeline: o.timeline.filter(function (t) { return t.visible !== false; }).map(function (t) { return { at: t.at, type: t.type, status: t.status || '', message: t.message || '' }; }) };
 }
 function adminOrder_(o) { var c = JSON.parse(JSON.stringify(o)); delete c._row; return c; }
@@ -347,8 +403,10 @@ function createOrder_(p) {
     service: serviceId, serviceName: category ? category.name : serviceId, itemId: item ? item.id : '', itemName: item ? item.name : str_(p.itemName, 120),
     unitPrice: item ? item.price : 0, unit: item ? item.unit : '', quantity: Math.floor(num_(p.quantity)),
     description: str_(p.description, 3000), preferredDate: str_(p.preferredDate, 10), preferredTime: str_(p.preferredTime, 5), address: str_(p.address, 300),
-    name: str_(p.name, 80), mobile: mobile_(p.mobile), email: str_(p.email, 120).toLowerCase()
+    name: str_(p.name, 80), mobile: mobile_(p.mobile), email: str_(p.email, 120).toLowerCase(),
+    paymentMethod: PAY_METHODS.indexOf(str_(p.paymentMethod)) >= 0 ? str_(p.paymentMethod) : 'COD', paymentRef: str_(p.paymentRef, 60).replace(/[^\w\- ]/g, '')
   };
+  d.paymentStatus = d.paymentMethod === 'COD' ? 'COD' : (d.paymentRef ? 'Paid - pending verification' : 'Awaiting payment');
   if (!d.service && !d.itemId) throw err_('INVALID', 'Please choose a service.', { field: 'service' });
   if (d.description.length < 3 && !d.itemId) throw err_('INVALID', 'Please describe the work in a few words.', { field: 'description' });
   if (!(d.quantity >= 1 && d.quantity <= 100000)) throw err_('INVALID', 'Enter a whole number, 1 or more.', { field: 'quantity' });
@@ -370,7 +428,9 @@ function createOrder_(p) {
       orderId: nextOrderId_(list), createdAt: now, updatedAt: now, status: 'Pending',
       estimate: d.unitPrice ? Math.round(d.unitPrice * d.quantity * 100) / 100 : 0,
       customerEmail: user && !admin ? user.email : '', source: admin ? 'admin' : 'website', amountQuoted: '', amountPaid: 0, adminNotes: '',
-      timeline: JSON.stringify([{ at: now, type: 'created', status: 'Pending', message: '', visible: true }]), trackKey: randKey_(), clientRef: ref
+      timeline: JSON.stringify([{ at: now, type: 'created', status: 'Pending', visible: true,
+        message: d.paymentMethod === 'PhonePe' ? 'Payment: PhonePe / UPI' + (d.paymentRef ? ' (UTR ' + d.paymentRef + ') - waiting for the shop to verify.' : ' - not paid yet.') : 'Payment: Cash on Delivery' }]),
+      trackKey: randKey_(), clientRef: ref
     });
     writeRow_(ordersSheet_(), o);
     return { order: findOrder_(o.orderId) };
@@ -389,6 +449,30 @@ function trackOrder_(p) {
   if (!o) throw fail;
   if (p.key) { if (String(p.key) !== o.trackKey) throw fail; }
   else if (!mobile_(p.mobile) || mobile_(p.mobile) !== mobile_(o.mobile)) throw fail;
+  return publicOrder_(o);
+}
+
+/** Customer adds the PhonePe / UPI transaction reference (UTR) after placing the order. */
+function submitPayment_(p) {
+  var ref = str_(p.paymentRef, 60).replace(/[^\w\- ]/g, '');
+  if (ref.length < 6) throw err_('INVALID', 'Please enter the UPI transaction / UTR number (at least 6 characters).', { field: 'paymentRef' });
+  var o = withLock_(function () {
+    var o = findOrder_(p.orderId);
+    var fail = err_('NOT_FOUND', 'Order not found.');
+    if (!o || !p.key || String(p.key) !== o.trackKey) throw fail;
+    if (o.paymentStatus === 'Paid - verified') throw err_('INVALID', 'The payment for this order is already verified.');
+    var now = new Date().toISOString(), tl = o.timeline;
+    tl.push({ at: now, type: 'payment', message: 'Customer paid by PhonePe / UPI. UTR: ' + ref + ' - waiting for the shop to verify.', visible: true });
+    var copy = Object.assign({}, o, { paymentMethod: 'PhonePe', paymentStatus: 'Paid - pending verification', paymentRef: ref, updatedAt: now, timeline: JSON.stringify(tl) });
+    var row = o._row; delete copy._row; delete copy.balance;
+    var sh = ordersSheet_(), raw = readRows_(sh).filter(function (r) { return r._row === row; })[0];
+    writeRow_(sh, Object.assign({}, raw, copy), row);
+    return findOrder_(o.orderId);
+  });
+  try {
+    if (EMAIL_ADMINS_ON_NEW_ORDER && MailApp.getRemainingDailyQuota() > 0) MailApp.sendEmail({ to: ADMIN_EMAILS.join(','), subject: 'Payment reported for ' + o.orderId + ' - UTR ' + ref,
+      name: shopName_() + ' Website', htmlBody: '<p>The customer says they paid by PhonePe / UPI. Please check your PhonePe app and mark the payment as verified.</p>' + orderTable_(o) });
+  } catch (e) { Logger.log('payment notify failed: ' + e); }
   return publicOrder_(o);
 }
 
@@ -422,6 +506,11 @@ function updateOrder_(p, admin) {
       tl.push({ at: now, type: 'payment', message: (diff >= 0 ? 'Payment received: ' : 'Payment corrected: ') + inr_(Math.abs(diff)) + '. Total paid ' + inr_(o.amountPaid), visible: true, by: admin.email });
     }
     if (p.adminNotes !== undefined && str_(p.adminNotes, 3000) !== o.adminNotes) { o.adminNotes = str_(p.adminNotes, 3000); changed = true; }
+    if (p.paymentStatus !== undefined && p.paymentStatus !== o.paymentStatus) {
+      if (PAY_STATUSES.indexOf(p.paymentStatus) < 0) throw err_('INVALID', 'Unknown payment status.');
+      o.paymentStatus = p.paymentStatus;   // the method (COD / PhonePe) stays as the customer chose
+      tl.push({ at: now, type: 'payment', message: 'Payment status: ' + o.paymentStatus, visible: true, by: admin.email }); changed = true;
+    }
     var msg = str_(p.message, 1000);
     if (statusChanged || msg) { tl.push({ at: now, type: statusChanged ? 'status' : 'note', status: statusChanged ? o.status : '', message: msg, visible: p.visible !== false, by: admin.email }); changed = true; }
     if (!changed) throw err_('INVALID', 'Nothing to save.');
@@ -451,6 +540,7 @@ function channels_() {
 function orderTable_(o) {
   var rows = [['Order number', o.orderId], ['Status', o.status], ['Service', o.serviceName], ['Item', o.itemName], ['Quantity', o.quantity],
     ['Estimate', o.estimate ? inr_(o.estimate) : ''], ['Bill amount', o.amountQuoted ? inr_(o.amountQuoted) : ''], ['Paid', o.amountPaid ? inr_(o.amountPaid) : ''],
+    ['Payment', (o.paymentMethod === 'PhonePe' ? 'PhonePe / UPI' : 'Cash on Delivery') + (o.paymentStatus && o.paymentStatus !== 'COD' ? ' - ' + o.paymentStatus : '') + (o.paymentRef ? ' (UTR ' + o.paymentRef + ')' : '')],
     ['Work', o.description], ['Preferred', [o.preferredDate, o.preferredTime].join(' ').trim()], ['Name', o.name], ['Mobile', o.mobile], ['E-mail', o.email], ['Address', o.address]];
   return '<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px">' + rows.filter(function (r) { return r[1] !== '' && r[1] !== undefined; }).map(function (r) {
     return '<tr><td style="padding:6px 12px;color:#5d6b85;border-bottom:1px solid #eee">' + esc_(r[0]) + '</td><td style="padding:6px 12px;border-bottom:1px solid #eee"><b>' + esc_(r[1]).replace(/\n/g, '<br>') + '</b></td></tr>';

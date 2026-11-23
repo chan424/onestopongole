@@ -11,6 +11,32 @@
   function key16() { return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10); }
   function admins() { return ((window.APP_CONFIG || {}).ADMIN_EMAILS || []).map(function (e) { return String(e).toLowerCase(); }); }
 
+  /* Same rules as bulkUpsertItems_ in Code.gs: match a service by name, a category by name or id. */
+  function mergeItems(catalogue, rows) {
+    var cat = clone(catalogue), added = 0, updated = 0, newCats = [];
+    var tones = ['blue', 'green', 'indigo', 'violet', 'red', 'purple', 'orange', 'teal'];
+    function slug(v) { return String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30); }
+    rows.forEach(function (r) {
+      var cname = String(r.category || '').trim(), key = String(r.name || '').trim().toLowerCase(), c = null, it = null;
+      cat.categories.forEach(function (x) { if (x.name.toLowerCase() === cname.toLowerCase() || x.id.toLowerCase() === cname.toLowerCase()) c = x; });
+      if (!c) {
+        var id = slug(cname) || ('cat' + (cat.categories.length + 1));
+        while (cat.categories.some(function (x) { return x.id === id; })) id += '1';
+        c = { id: id, name: cname, desc: '', icon: 'layers', tone: tones[cat.categories.length % tones.length], order: cat.categories.length + 1, active: true };
+        cat.categories.push(c); newCats.push(cname);
+      }
+      cat.items.forEach(function (x) { if (String(x.name).toLowerCase() === key) it = x; });
+      var v = { category: c.id, name: String(r.name).trim(), price: Math.round(Number(r.price) * 100) / 100 };
+      if (r.unit) v.unit = String(r.unit); if (r.desc) v.desc = String(r.desc);
+      if (r.active !== undefined && r.active !== '') v.active = r.active !== false;
+      if (r.popular !== undefined && r.popular !== '') v.popular = !!r.popular;
+      if (r.onsite !== undefined && r.onsite !== '') v.onsite = !!r.onsite;
+      if (it) { Object.assign(it, v); updated++; }
+      else { cat.items.push(Object.assign({ id: c.id.slice(0, 3) + '-' + slug(v.name).slice(0, 18) + '-' + Date.now().toString(36).slice(-4) + added, unit: 'per item', desc: '', active: true, popular: false, onsite: false }, v)); added++; }
+    });
+    return { catalogue: cat, added: added, updated: updated, newCategories: newCats };
+  }
+
   function seed() {
     var cat = clone(window.DEFAULT_CATALOGUE);
     function item(id) { for (var i = 0; i < cat.items.length; i++) if (cat.items[i].id === id) return cat.items[i]; }
@@ -46,7 +72,7 @@
     var q = Number(o.amountQuoted) || 0, p = Number(o.amountPaid) || 0;
     return { orderId: o.orderId, createdAt: o.createdAt, updatedAt: o.updatedAt, status: o.status, service: o.serviceName, itemName: o.itemName, unitPrice: o.unitPrice, unit: o.unit,
       quantity: o.quantity, estimate: o.estimate, description: o.description, preferredDate: o.preferredDate, preferredTime: o.preferredTime, amountQuoted: q, amountPaid: p,
-      balance: Math.max(0, q - p), trackKey: o.trackKey, timeline: o.timeline.filter(function (t) { return t.visible !== false; }) };
+      balance: Math.max(0, q - p), trackKey: o.trackKey, paymentMethod: o.paymentMethod || 'COD', paymentStatus: o.paymentStatus || 'COD', paymentRef: o.paymentRef || '', timeline: o.timeline.filter(function (t) { return t.visible !== false; }) };
   }
   function adm(o) { var c = clone(o); c.amountQuoted = Number(c.amountQuoted) || 0; c.amountPaid = Number(c.amountPaid) || 0; c.balance = Math.max(0, c.amountQuoted - c.amountPaid); return c; }
   function find(d, id) { id = String(id || '').trim().toUpperCase(); for (var i = 0; i < d.orders.length; i++) if (d.orders[i].orderId === id) return d.orders[i]; return null; }
@@ -82,7 +108,10 @@
           unitPrice: it ? it.price : 0, unit: it ? it.unit : '', quantity: q, estimate: it ? it.price * q : 0, description: String(p.description || '').trim(), preferredDate: p.preferredDate || '',
           preferredTime: p.preferredTime || '', address: p.address || '', name: String(p.name).trim(), mobile: mobile(p.mobile), email: String(p.email || (u && !asAdmin ? u.email : '')).toLowerCase(),
           customerEmail: u && !asAdmin ? u.email : '', source: asAdmin ? 'admin' : 'website', amountQuoted: 0, amountPaid: 0, adminNotes: '',
-          timeline: [{ at: t, type: 'created', status: 'Pending', message: '', visible: true }], trackKey: key16(), clientRef: p.clientRef || '' };
+          timeline: [{ at: t, type: 'created', status: 'Pending', message: '', visible: true }], trackKey: key16(), clientRef: p.clientRef || '',
+          paymentMethod: p.paymentMethod === 'PhonePe' ? 'PhonePe' : 'COD', paymentRef: String(p.paymentRef || '').trim().slice(0, 60) };
+        o.paymentStatus = o.paymentMethod === 'COD' ? 'COD' : (o.paymentRef ? 'Paid - pending verification' : 'Awaiting payment');
+        o.timeline[0].message = o.paymentMethod === 'PhonePe' ? 'Payment: PhonePe / UPI' + (o.paymentRef ? ' (UTR ' + o.paymentRef + ') - waiting for the shop to verify.' : ' - not paid yet.') : 'Payment: Cash on Delivery';
         d.orders.unshift(o);
         notify(d, admins().join(', '), 'New order ' + o.orderId + ' - ' + o.name);
         if (o.email) notify(d, o.email, 'Order ' + o.orderId + ' received');
@@ -93,6 +122,16 @@
         o = find(d, p.orderId);
         if (!o || (p.key ? p.key !== o.trackKey : mobile(p.mobile) !== o.mobile)) return err('NOT_FOUND', 'No order found with that number and mobile. Please check and try again.');
         return { ok: true, data: pub(o) };
+      case 'submitPayment': {
+        o = find(d, p.orderId);
+        var ref = String(p.paymentRef || '').trim();
+        if (ref.length < 6) return err('INVALID', 'Please enter the UPI transaction / UTR number (at least 6 characters).', { field: 'paymentRef' });
+        if (!o || p.key !== o.trackKey) return err('NOT_FOUND', 'Order not found.');
+        o.paymentMethod = 'PhonePe'; o.paymentStatus = 'Paid - pending verification'; o.paymentRef = ref; o.updatedAt = now();
+        o.timeline.push({ at: o.updatedAt, type: 'payment', message: 'Customer paid by PhonePe / UPI. UTR: ' + ref + ' - waiting for the shop to verify.', visible: true });
+        notify(d, admins().join(', '), 'Payment reported for ' + o.orderId + ' - UTR ' + ref); save(d);
+        return { ok: true, data: pub(o) };
+      }
       case 'myOrders':
         if (!u) return err('AUTH', 'Please sign in.');
         return { ok: true, data: { user: u, orders: d.orders.filter(function (x) { return x.customerEmail === u.email || x.email === u.email; }).map(pub) } };
@@ -111,6 +150,10 @@
           o.timeline.push({ at: t2, type: 'payment', message: 'Payment received: Rs ' + Math.abs(diff) + '. Total paid Rs ' + o.amountPaid, visible: true, by: u.email });
         }
         if (p.adminNotes !== undefined && p.adminNotes !== o.adminNotes) { o.adminNotes = String(p.adminNotes); ch = true; }
+        if (p.paymentStatus !== undefined && p.paymentStatus !== (o.paymentStatus || 'COD')) {
+          o.paymentStatus = p.paymentStatus; ch = true;
+          o.timeline.push({ at: t2, type: 'payment', message: 'Payment status: ' + o.paymentStatus, visible: true, by: u.email });
+        }
         if (sc || msg) { o.timeline.push({ at: t2, type: sc ? 'status' : 'note', status: sc ? o.status : '', message: msg, visible: p.visible !== false, by: u.email }); ch = true; }
         if (!ch) return err('INVALID', 'Nothing to save.');
         o.updatedAt = t2;
@@ -124,6 +167,12 @@
         if (!p.categories || !p.categories.length) return err('INVALID', 'Add at least one category.');
         d.catalogue = { categories: p.categories, items: p.items || [] }; save(d);
         return { ok: true, data: d.catalogue };
+      case 'bulkUpsertItems': {
+        if ((deny = needAdmin())) return deny;
+        if (!p.rows || !p.rows.length) return err('INVALID', 'No rows to save.');
+        var mr = mergeItems(d.catalogue, p.rows); d.catalogue = mr.catalogue; save(d);
+        return { ok: true, data: mr };
+      }
       case 'saveSettings':
         if ((deny = needAdmin())) return deny;
         d.settings = Object.assign({}, d.settings, p.settings || {}); save(d);
@@ -137,5 +186,5 @@
       default: return err('INVALID', 'Unknown action: ' + p.action);
     }
   }
-  window.DemoBackend = { handle: handle, reset: function () { localStorage.removeItem(KEY); } };
+  window.DemoBackend = { handle: handle, mergeItems: mergeItems, reset: function () { localStorage.removeItem(KEY); } };
 })();
