@@ -8,8 +8,8 @@
   var PUBKEY = App.demo ? 'oss_public_cache_demo' : 'oss_public_cache';
   var root, S = {}, POLL = App.demo ? 15000 : 60000;
   var st = {
-    cat: null, catSource: 'default', backendOld: false, filter: 'all', q: '',
-    form: { category: '', itemId: '', qty: 1 }, sending: false, clientRef: App.uid(),
+    cat: null, catSource: 'default', backendOld: false, apiVersion: '', filter: 'all', q: '', sort: 'default', only: '',
+    form: { category: '', itemId: '', qty: 1, pay: 'COD' }, sending: false, clientRef: App.uid(),
     me: App.store.get('oss_me', { name: '', mobile: '', email: '' }),
     device: App.store.get(K('oss_my_orders'), []),        // [{orderId, key}]
     seen: App.store.get(K('oss_seen'), {}),               // orderId -> updatedAt the customer has seen
@@ -24,6 +24,42 @@
     S = Object.assign({}, App.cfg, nonEmpty(s));
     S.PHONE = String(S.PHONE || '').replace(/\D/g, '').slice(-10);
     S.WHATSAPP = String(S.WHATSAPP || '').replace(/\D/g, '').slice(-10);
+    S.PHONEPE_NUMBER = String(S.PHONEPE_NUMBER || '').replace(/\D/g, '').slice(-10);
+  }
+  /* ============================== payment (PhonePe / UPI) ============================== */
+  function payOn() { return !!(S.PHONEPE_NUMBER || S.UPI_ID); }
+  function upiLink(amount, note) {
+    if (!S.UPI_ID) return '';
+    return 'upi://pay?pa=' + encodeURIComponent(S.UPI_ID).replace(/%40/g, '@') + '&pn=' + encodeURIComponent(S.UPI_NAME || S.BUSINESS_NAME || 'Shop') +
+      (amount > 0 ? '&am=' + (Math.round(amount * 100) / 100).toFixed(2) : '') + '&cu=INR' + (note ? '&tn=' + encodeURIComponent(note) : '');
+  }
+  // payment instructions box; amount may be 0 (= amount to be confirmed by the shop)
+  function payBox(amount, note) {
+    var link = upiLink(amount, note);
+    return '<div class="paybox"><div class="pay-main"><span class="pay-ic">' + icon('phone', 20) + '</span><div><small>Pay to PhonePe number</small><b>' + h(S.PHONEPE_NUMBER || S.PHONE) + '</b>' +
+      '<span class="muted small">' + (amount > 0 ? 'Amount: <b>' + money(amount) + '</b>' : 'Pay the amount the shop confirms') + (S.UPI_NAME ? ' · Name: ' + h(S.UPI_NAME) : '') + '</span></div>' +
+      '<button class="btn ghost sm" type="button" data-copy="' + h(S.PHONEPE_NUMBER || S.PHONE) + '">Copy</button></div>' +
+      (link ? '<div class="pay-alt"><div class="qr" data-qr="' + h(link) + '"></div><div><p class="small">Scan with PhonePe, Google Pay, Paytm or any UPI app' + (S.UPI_ID ? ' (UPI ID <code>' + h(S.UPI_ID) + '</code>)' : '') + ', or on your phone:</p>' +
+        '<a class="btn sm" href="' + h(link) + '">' + icon('rupee', 16) + ' Open PhonePe / UPI app</a></div></div>' : '') +
+      '<p class="hint">After paying, note the <b>UTR / transaction ID</b> shown in PhonePe (12 digits) and enter it below. The shop checks the payment and marks your order as paid.</p></div>';
+  }
+  // draw QR codes with the small qrcode-generator library (loaded only when needed)
+  var qrLib = null;
+  function drawQrs() {
+    var nodes = root.querySelectorAll('[data-qr]:not(.drawn)'); if (!nodes.length) return;
+    if (!qrLib) qrLib = new Promise(function (ok, no) {
+      if (window.qrcode) return ok();
+      var sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js'; sc.onload = ok; sc.onerror = function () { qrLib = null; no(); }; document.head.appendChild(sc);
+    });
+    qrLib.then(function () {
+      root.querySelectorAll('[data-qr]:not(.drawn)').forEach(function (el) {
+        try { var q = window.qrcode(0, 'M'); q.addData(el.getAttribute('data-qr')); q.make(); el.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); el.classList.add('drawn'); } catch (e) { el.classList.add('hide'); }
+      });
+    }, function () { root.querySelectorAll('[data-qr]').forEach(function (el) { el.classList.add('hide'); }); });
+  }
+  function payLabel(o) {
+    var m = o.paymentMethod === 'PhonePe' ? 'PhonePe / UPI' : 'Cash on Delivery';
+    return m + (o.paymentStatus && o.paymentStatus !== 'COD' ? ' - ' + o.paymentStatus : '') + (o.paymentRef ? ' (UTR ' + o.paymentRef + ')' : '');
   }
   applySettings(App.store.get(PUBKEY, {}).settings);
   st.cat = (App.store.get(PUBKEY, {}).catalogue) || JSON.parse(JSON.stringify(window.DEFAULT_CATALOGUE));
@@ -38,6 +74,7 @@
     var cached = App.store.get(PUBKEY, null);
     return App.api('getPublic', {}, { retries: 1 }).then(function (d) {
       if (d && d.catalogue && d.catalogue.categories && d.catalogue.categories.length) { st.cat = d.catalogue; st.catSource = 'live'; }
+      st.apiVersion = String((d && d.version) || '');
       applySettings(d.settings || {});
       App.store.set(PUBKEY, { catalogue: st.cat, settings: d.settings || {} });
     }, function (e) {
@@ -119,7 +156,7 @@
   function isUnseen(o) { var s = st.seen[o.orderId]; return s !== undefined && s !== o.updatedAt; }
   function renderHeader() {
     var u = App.auth.user, n = unseenCount();
-    var nav = [['services', 'Services'], ['catalogue', 'Price list'], ['order', 'Order'], ['track', 'Track'], ['about', 'About'], ['contact', 'Contact']];
+    var nav = [['services', 'Services'], ['catalogue', 'Browse'], ['order', 'Order'], ['track', 'Track'], ['about', 'About'], ['contact', 'Contact']];
     var userBtn = u
       ? '<div class="umenu"><button class="avatar-btn" data-act="usermenu" aria-label="Account menu">' + avatar(u) + (n ? '<span class="dot-badge">' + n + '</span>' : '') + '</button>' +
         '<div class="umenu-pop hide" id="umenu"><div class="umenu-h"><b>' + h(u.name || 'Customer') + '</b><span class="muted small">' + h(u.email || u.mobile || '') + '</span>' + (u.isAdmin ? '<span class="tag admin-tag">Admin</span>' : '') + '</div>' +
@@ -183,19 +220,30 @@
   }
 
   function catalogueSection(cats) {
-    return '<section class="sec alt" id="catalogue"><div class="wrap"><div class="sec-h"><span class="eyebrow">Transparent pricing</span><h2>Price list</h2><p class="muted">Prices are starting rates. Final bill is confirmed before work begins.</p></div>' +
-      '<div class="cat-tools"><div class="chips" role="tablist"><button class="chip' + (st.filter === 'all' ? ' on' : '') + '" data-filter="all">All</button>' +
-      cats.map(function (c) { return '<button class="chip' + (st.filter === c.id ? ' on' : '') + '" data-filter="' + h(c.id) + '">' + icon(c.icon, 16) + ' ' + h(c.name) + '</button>'; }).join('') + '</div>' +
-      '<label class="search">' + icon('search', 18) + '<input id="cat-q" type="search" placeholder="Search services..." value="' + h(st.q) + '"></label></div>' +
-      '<div class="items" id="items"></div>' + (st.catSource === 'default' && !App.demo ? '<p class="hint center" style="margin-top:14px">Showing the standard price list.</p>' : '') + '</div></section>';
+    var cnt = function (id) { return activeItems().filter(function (i) { return id === 'all' || i.category === id; }).length; };
+    var sorts = [['default', 'Recommended'], ['price-asc', 'Price: low to high'], ['price-desc', 'Price: high to low'], ['name', 'Name: A to Z']];
+    return '<section class="sec alt" id="catalogue"><div class="wrap"><div class="sec-h"><span class="eyebrow">Transparent pricing</span><h2>Browse services &amp; prices</h2><p class="muted">Search, filter by category and sort by price. Prices are starting rates; the final bill is confirmed before work begins.</p></div>' +
+      '<div class="cat-tools"><div class="chips" role="tablist"><button class="chip' + (st.filter === 'all' ? ' on' : '') + '" data-filter="all">All <span class="cnt">' + cnt('all') + '</span></button>' +
+      cats.map(function (c) { return '<button class="chip' + (st.filter === c.id ? ' on' : '') + '" data-filter="' + h(c.id) + '">' + icon(c.icon, 16) + ' ' + h(c.name) + ' <span class="cnt">' + cnt(c.id) + '</span></button>'; }).join('') + '</div>' +
+      '<div class="browse-row"><label class="search">' + icon('search', 18) + '<input id="cat-q" type="search" placeholder="Search services..." value="' + h(st.q) + '"></label>' +
+      '<select class="input sort-in" id="cat-sort" aria-label="Sort">' + sorts.map(function (o) { return '<option value="' + o[0] + '"' + (st.sort === o[0] ? ' selected' : '') + '>Sort: ' + o[1] + '</option>'; }).join('') + '</select>' +
+      '<select class="input sort-in" id="cat-only" aria-label="Show"><option value="">Show: all services</option><option value="popular"' + (st.only === 'popular' ? ' selected' : '') + '>Show: popular only</option><option value="onsite"' + (st.only === 'onsite' ? ' selected' : '') + '>Show: on-site services</option><option value="shop"' + (st.only === 'shop' ? ' selected' : '') + '>Show: at-shop services</option></select></div></div>' +
+      '<p class="muted small" id="items-n"></p><div class="items" id="items"></div>' + (st.catSource === 'default' && !App.demo ? '<p class="hint center" style="margin-top:14px">Showing the standard price list.</p>' : '') + '</div></section>';
   }
   function renderItems() {
     var box = $('#items'); if (!box) return;
     var q = st.q.toLowerCase(), isAdm = App.auth.isAdmin();
     var list = activeItems().filter(function (i) {
       var c = catById(i.category); if (c && c.active === false) return false;
+      if (st.only === 'popular' && !i.popular) return false;
+      if (st.only === 'onsite' && !i.onsite) return false;
+      if (st.only === 'shop' && i.onsite) return false;
       return (st.filter === 'all' || i.category === st.filter) && (!q || (i.name + ' ' + (i.desc || '') + ' ' + (c ? c.name : '')).toLowerCase().indexOf(q) >= 0);
     });
+    if (st.sort === 'price-asc') list.sort(function (a, b) { return (Number(a.price) || 0) - (Number(b.price) || 0); });
+    else if (st.sort === 'price-desc') list.sort(function (a, b) { return (Number(b.price) || 0) - (Number(a.price) || 0); });
+    else if (st.sort === 'name') list.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+    var n = $('#items-n'); if (n) n.textContent = list.length + ' service' + (list.length === 1 ? '' : 's') + ' found' + (st.filter !== 'all' && catById(st.filter) ? ' in ' + catById(st.filter).name : '');
     box.innerHTML = list.length ? list.map(function (i) {
       var c = catById(i.category) || {};
       return '<article class="item tone-' + h(c.tone || 'blue') + '"><div class="item-top"><span class="item-ic">' + icon(c.icon, 22) + '</span>' +
@@ -241,10 +289,9 @@
   }
 
   function sideCards() {
-    var out = '<div class="card side-c"><h3>' + icon('info', 18) + ' Good to know</h3><ul class="ticks"><li>' + icon('check', 15) + ' No payment needed to order</li><li>' + icon('check', 15) + ' Final price confirmed before work</li><li>' + icon('check', 15) + ' Send files for printing on WhatsApp' + (S.EMAIL ? ' or e-mail' : '') + '</li><li>' + icon('check', 15) + ' Track your order any time</li></ul></div>';
-    if (S.UPI_ID) {
-      var upi = 'upi://pay?pa=' + encodeURIComponent(S.UPI_ID) + (S.UPI_NAME ? '&pn=' + encodeURIComponent(S.UPI_NAME) : '') + '&cu=INR';
-      out += '<div class="card side-c"><h3>' + icon('rupee', 18) + ' Pay advance by UPI</h3><p class="muted small">Optional. Mention your order number in the payment note.</p><div class="upi"><code>' + h(S.UPI_ID) + '</code><button class="btn ghost sm" data-copy="' + h(S.UPI_ID) + '">Copy</button></div><a class="btn block sm" href="' + h(upi) + '">Open UPI app</a></div>';
+    var out = '<div class="card side-c"><h3>' + icon('info', 18) + ' Good to know</h3><ul class="ticks"><li>' + icon('check', 15) + ' Cash on Delivery, or pay online by PhonePe / UPI</li><li>' + icon('check', 15) + ' Final price confirmed before work</li><li>' + icon('check', 15) + ' Send files for printing on WhatsApp' + (S.EMAIL ? ' or e-mail' : '') + '</li><li>' + icon('check', 15) + ' Track your order any time</li></ul></div>';
+    if (payOn()) {
+      out += '<div class="card side-c"><h3>' + icon('rupee', 18) + ' Pay by PhonePe</h3><p class="muted small">Optional - you can also pay cash on delivery. Choose "Pay now" in the order form.</p><div class="upi"><span>PhonePe: <b>' + h(S.PHONEPE_NUMBER || S.PHONE) + '</b></span><button class="btn ghost sm" data-copy="' + h(S.PHONEPE_NUMBER || S.PHONE) + '">Copy</button></div></div>';
     }
     if (S.WHATSAPP || S.PHONE) out += '<div class="card side-c help"><h3>Need help choosing?</h3><p class="muted small">Talk to us - we will suggest the right service.</p><div class="row">' +
       (S.PHONE ? '<a class="btn ghost sm" href="tel:+91' + S.PHONE + '">' + icon('phone', 16) + ' Call</a>' : '') +
@@ -274,14 +321,27 @@
       '<div class="grid2"><div class="field"><label for="f-name">Your name</label><input class="input" id="f-name" maxlength="80" autocomplete="name" value="' + h(me.name || (u && u.name) || '') + '"><div class="err" data-e="name"></div></div>' +
       '<div class="field"><label for="f-mobile">Mobile number</label><input class="input" id="f-mobile" type="tel" inputmode="numeric" maxlength="14" autocomplete="tel" value="' + h(me.mobile || (u && u.mobile) || '') + '"><div class="err" data-e="mobile"></div></div></div>' +
       '<div class="field"><label for="f-email">E-mail <span class="opt">(optional - for order updates)</span></label><input class="input" id="f-email" type="email" autocomplete="email" value="' + h(me.email || (u && u.kind !== 'phone' ? u.email : '') || '') + '"><div class="err" data-e="email"></div></div>' +
+      (payOn() ? '<div class="field"><label>Payment</label><div class="pay-pick">' +
+        '<label class="pp' + (F.pay !== 'PhonePe' ? ' on' : '') + '"><input type="radio" name="f-pay" value="COD"' + (F.pay !== 'PhonePe' ? ' checked' : '') + '><span><b>Cash on Delivery</b><small>Pay cash when the work is done / delivered</small></span></label>' +
+        '<label class="pp' + (F.pay === 'PhonePe' ? ' on' : '') + '"><input type="radio" name="f-pay" value="PhonePe"' + (F.pay === 'PhonePe' ? ' checked' : '') + '><span><b>Pay now by PhonePe / UPI</b><small>Optional - pay to ' + h(S.PHONEPE_NUMBER || S.PHONE) + '</small></span></label></div></div>' +
+        '<div id="pay-now"></div>' : '') +
       '<input class="hp" id="f-website" tabindex="-1" autocomplete="off" aria-hidden="true">' +
       '<div class="err" id="form-err" style="margin-bottom:10px"></div><button class="btn lg block" id="submit" type="submit">' + icon('check', 19) + ' Place order</button>' +
       '<p class="hint center" style="margin-top:10px">By ordering you agree to be contacted about this order by phone, WhatsApp or e-mail.</p></form>';
     renderEstimate();
   }
+  function estimateNow() { var it = itemById(st.form.itemId), q = Math.max(1, Math.floor(Number(st.form.qty) || 1)); return it ? it.price * q : 0; }
+  function renderPayNow() {
+    var el = $('#pay-now'); if (!el) return;
+    var keep = $('#f-paymentRef') ? $('#f-paymentRef').value : '';
+    el.innerHTML = st.form.pay === 'PhonePe' ? payBox(estimateNow(), 'Order from ' + (val('name') || 'website')) +
+      '<div class="field"><label for="f-paymentRef">UPI transaction / UTR number <span class="opt">(optional - you can also pay after placing the order)</span></label><input class="input" id="f-paymentRef" maxlength="40" placeholder="e.g. 412345678901" value="' + h(keep) + '"><div class="err" data-e="paymentRef"></div></div>' : '';
+    drawQrs();
+  }
   function renderEstimate() {
     var el = $('#est'); if (!el) return;
     var it = itemById(st.form.itemId), q = Math.max(1, Math.floor(Number(st.form.qty) || 1));
+    renderPayNow();
     el.innerHTML = it ? '<div class="estimate"><div><small>Selected</small><b>' + h(it.name) + '</b><span class="muted small">' + money(it.price) + ' ' + h(it.unit || '') + '</span></div><div class="right"><small>Estimate</small><b class="big">' + money(it.price * q) + '</b></div></div>' : '';
   }
   function val(id) { var e = $('#f-' + id); return e ? String(e.value).trim() : ''; }
@@ -298,7 +358,8 @@
     if (st.sending) return;
     var it = itemById(val('item'));
     var d = { service: val('category'), itemId: val('item'), description: val('description'), quantity: val('quantity'), preferredDate: val('preferredDate'), preferredTime: val('preferredTime'),
-      address: val('address'), name: val('name'), mobile: val('mobile'), email: val('email'), website: val('website'), clientRef: st.clientRef };
+      address: val('address'), name: val('name'), mobile: val('mobile'), email: val('email'), website: val('website'), clientRef: st.clientRef,
+      paymentMethod: payOn() && st.form.pay === 'PhonePe' ? 'PhonePe' : 'COD', paymentRef: st.form.pay === 'PhonePe' ? val('paymentRef').replace(/[^\w\- ]/g, '') : '' };
     var e = {};
     if (!d.service) e.service = 'Please choose a service type.';
     if (!it && d.description.length < 5) e.description = 'Please describe the work in a few words.';
@@ -306,10 +367,13 @@
     if (d.name.length < 2) e.name = 'Please enter your name.';
     if (!App.mobileOk(d.mobile)) e.mobile = 'Enter a valid 10-digit mobile number.';
     if (d.email && !App.emailOk(d.email)) e.email = 'This e-mail address does not look right.';
+    if (d.paymentRef && d.paymentRef.length < 6) e.paymentRef = 'The UTR number looks too short. Leave it empty if you have not paid yet.';
     showErrors(e); $('#form-err').textContent = '';
     if (Object.keys(e).length) return;
     if (it && (st.backendOld || st.catSource === 'default')) d.description = 'Item: ' + it.name + ' (' + money(it.price) + ' ' + (it.unit || '') + ')' + (d.description ? '\n' + d.description : '');
     if (!d.description && it) d.description = it.name;
+    // older backend (before v2.1) has no payment columns: keep the payment choice in the work details
+    if (!App.demo && st.apiVersion && st.apiVersion < '2.1' && d.paymentMethod === 'PhonePe') d.description += '\nPayment: PhonePe / UPI' + (d.paymentRef ? ', UTR ' + d.paymentRef : ' (not paid yet)');
     st.sending = true;
     var btn = $('#submit'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Placing your order...';
     App.api('createOrder', d).then(function (res) {
@@ -330,17 +394,45 @@
     });
   }
   function trackLink(orderId, key) { return key ? location.origin + location.pathname.replace(/index\.html$/, '') + '?t=' + encodeURIComponent(orderId + '.' + key) : ''; }
+  function orderWaText(res, d, it) {
+    var link = trackLink(res.orderId, res.trackKey), q = Number(d.quantity) || 1, total = it ? it.price * q : 0;
+    var pay = d.paymentMethod === 'PhonePe' ? 'PhonePe / UPI' + (d.paymentRef ? ' - UTR ' + d.paymentRef : ' - not paid yet') : 'Cash on Delivery (COD)';
+    return 'Hello ' + S.BUSINESS_NAME + ', I placed an order.\nOrder ID: ' + res.orderId + '\nName: ' + d.name + '\nPhone: ' + d.mobile + (d.address ? '\nAddress: ' + d.address : '') +
+      '\nItem: ' + (it ? it.name + ' x ' + q + ' @ ' + money(it.price) + ' ' + (it.unit || '') : ((catById(d.service) || {}).name || d.service) + ' x ' + q) +
+      '\nTotal: ' + (total ? money(total) : 'to be confirmed') + '\nPayment: ' + pay + (d.description && (!it || d.description !== it.name) ? '\nDetails: ' + d.description.slice(0, 300) : '') + (link ? '\nTrack: ' + link : '');
+  }
   function renderDone(res, d, it) {
+    st.lastDone = { res: res, d: d, it: it }; st.form.pay = 'COD';
     var link = trackLink(res.orderId, res.trackKey);
-    var waText = 'Hello ' + S.BUSINESS_NAME + ', I placed order ' + res.orderId + '.\nName: ' + d.name + '\nMobile: ' + d.mobile + '\nService: ' + (it ? it.name : (catById(d.service) || {}).name || d.service) +
-      '\nQuantity: ' + d.quantity + (d.description ? '\nDetails: ' + d.description.slice(0, 300) : '') + (link ? '\nTrack: ' + link : '');
-    var wa = '<a class="btn wa" target="_blank" rel="noopener" href="' + h(App.waLink(S.WHATSAPP, waText)) + '">' + icon('chat', 18) + ' Send on WhatsApp</a>';
+    var wa = '<a class="btn wa" target="_blank" rel="noopener" href="' + h(App.waLink(S.WHATSAPP, orderWaText(res, d, it))) + '">' + icon('chat', 18) + ' Send order on WhatsApp</a>';
+    var total = it ? it.price * (Number(d.quantity) || 1) : 0;
+    var pay = d.paymentMethod === 'PhonePe' ? '<div class="pay-done">' + (d.paymentRef ? '<div class="note">' + icon('check', 16) + ' Thank you! We received your UTR <b>' + h(d.paymentRef) + '</b>. The shop will verify the payment.</div>' :
+      '<h4 class="sub-h">Pay now by PhonePe</h4>' + payBox(total, 'Order ' + res.orderId) +
+      '<form id="payf" data-id="' + h(res.orderId) + '" data-key="' + h(res.trackKey || '') + '" novalidate><div class="grid2 keep"><div class="field"><label for="pay-ref">UTR / transaction number</label><input class="input" id="pay-ref" maxlength="40" placeholder="e.g. 412345678901"></div>' +
+      '<div class="field"><label class="hide-sm">&nbsp;</label><button class="btn block" id="pay-go" type="submit">' + icon('check', 17) + ' I have paid</button></div></div><div class="err" id="pay-err"></div></form>') + '</div>'
+      : '<p class="muted small">Payment: <b>Cash on Delivery</b>.</p>';
     $('#orderbox').innerHTML = '<div class="done"><div class="tick">' + icon('check', 34) + '</div><h3>Order placed. Thank you, ' + h(d.name) + '!</h3><p class="muted">Your order number is</p><div class="oid">' + h(res.orderId) + '</div>' +
-      '<p class="muted">' + (d.email ? (res.emailed ? 'A confirmation has been e-mailed to you. ' : '') : '') + 'Keep this number to track your order. ' + (S.WHATSAPP ? 'Send it to us on WhatsApp with your files for faster service.' : '') + '</p>' +
+      '<p class="muted">' + (d.email ? (res.emailed ? 'A confirmation has been e-mailed to you. ' : '') : '') + 'Keep this number to track your order. ' + (S.WHATSAPP ? 'Send it to us on WhatsApp with your files for faster service.' : '') + '</p>' + pay +
       '<div class="row center">' + (S.WHATSAPP ? wa : '') + '<button class="btn" data-track-id="' + h(res.orderId) + '" data-track-key="' + h(res.trackKey || '') + '">' + icon('search', 18) + ' Track this order</button>' +
       (link ? '<button class="btn ghost" data-copy="' + h(link) + '">' + icon('link', 18) + ' Copy tracking link</button>' : '') +
       '<button class="btn ghost" data-act="again">' + icon('plus', 18) + ' Place another order</button></div></div>';
+    drawQrs();
     try { $('#order').scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {}
+  }
+  function submitPayment(form) {
+    var ref = $('#pay-ref').value.trim().replace(/[^\w\- ]/g, ''), err = $('#pay-err');
+    if (ref.length < 6) { err.textContent = 'Please enter the UTR / transaction number from PhonePe (usually 12 digits).'; return; }
+    var btn = $('#pay-go'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Saving...';
+    App.api('submitPayment', { orderId: form.getAttribute('data-id'), key: form.getAttribute('data-key'), paymentRef: ref }).then(function () {
+      var box = form.closest('.pay-done') || form;
+      box.innerHTML = '<div class="note">' + icon('check', 16) + ' Thank you! We received your UTR <b>' + h(ref) + '</b>. The shop will verify the payment.</div>';
+      var L = st.lastDone, wa = $('#orderbox a.wa');
+      if (L && wa && L.res.orderId === form.getAttribute('data-id')) { L.d.paymentRef = ref; wa.href = App.waLink(S.WHATSAPP, orderWaText(L.res, L.d, L.it)); }
+      loadMy(true);
+    }, function (e) {
+      btn.disabled = false; btn.innerHTML = icon('check', 17) + ' I have paid';
+      err.textContent = e.code === 'OLD_BACKEND' ? 'Could not save the UTR online. Please send it to us on WhatsApp.' : e.message;
+    });
   }
 
   /* ------------------------------ tracking ------------------------------ */
@@ -361,7 +453,7 @@
     var amounts = '<div class="amounts"><div><small>Bill amount</small><b>' + (o.amountQuoted > 0 ? money(o.amountQuoted) : (o.estimate ? '~' + money(o.estimate) : 'To be confirmed')) + '</b></div>' +
       '<div class="paid"><small>Paid</small><b>' + money(o.amountPaid) + '</b></div><div class="due"><small>Balance</small><b>' + (o.amountQuoted > 0 ? money(o.balance) : '-') + '</b></div></div>';
     return '<div class="ov"><div class="ov-h"><h3>' + h(o.orderId) + '</h3>' + App.pill(o.status) + '</div><p class="muted">' + h(App.STATUS_TEXT[o.status] || '') + '</p>' + stepper + amounts +
-      '<dl class="kv"><dt>Service</dt><dd>' + h(o.itemName || o.service) + (o.itemName && o.service ? ' <span class="muted">(' + h(o.service) + ')</span>' : '') + '</dd><dt>Quantity</dt><dd>' + h(o.quantity) + '</dd>' +
+      '<dl class="kv"><dt>Payment</dt><dd>' + h(payLabel(o)) + '</dd><dt>Service</dt><dd>' + h(o.itemName || o.service) + (o.itemName && o.service ? ' <span class="muted">(' + h(o.service) + ')</span>' : '') + '</dd><dt>Quantity</dt><dd>' + h(o.quantity) + '</dd>' +
       (o.description ? '<dt>Work</dt><dd>' + App.nl2br(o.description) + '</dd>' : '') +
       (o.preferredDate ? '<dt>Preferred</dt><dd>' + h(App.fmtDate(o.preferredDate)) + (o.preferredTime ? ', ' + h(App.fmtClock(o.preferredTime)) : '') + '</dd>' : '') +
       '<dt>Placed on</dt><dd>' + h(App.fmtDateTime(o.createdAt)) + '</dd></dl>' +
@@ -537,11 +629,14 @@
     var id = ev.target.id;
     if (id === 'f-category') { st.form.category = ev.target.value; st.form.itemId = ''; keepForm(renderOrderForm); }
     else if (id === 'f-item') { st.form.itemId = ev.target.value; keepForm(renderOrderForm); }
+    else if (ev.target.name === 'f-pay') { st.form.pay = ev.target.value; root.querySelectorAll('.pay-pick .pp').forEach(function (l) { l.classList.toggle('on', l.querySelector('input').checked); }); renderPayNow(); }
+    else if (id === 'cat-sort') { st.sort = ev.target.value; renderItems(); }
+    else if (id === 'cat-only') { st.only = ev.target.value; renderItems(); }
     else if (App.adminChange) App.adminChange(ev);
   }
   // re-render the order form but keep what the customer already typed
   function keepForm(fn) {
-    var keep = ['quantity', 'preferredDate', 'preferredTime', 'description', 'address', 'name', 'mobile', 'email'], v = {};
+    var keep = ['quantity', 'preferredDate', 'preferredTime', 'description', 'address', 'name', 'mobile', 'email', 'paymentRef'], v = {};
     keep.forEach(function (k) { v[k] = val(k); });
     fn();
     keep.forEach(function (k) { var e = $('#f-' + k); if (e && v[k] !== '') e.value = v[k]; });
@@ -556,6 +651,7 @@
     var id = ev.target.id;
     ev.preventDefault();
     if (id === 'of') return submitOrder();
+    if (id === 'payf') return submitPayment(ev.target);
     if (id === 'tf') {
       var oid = $('#t-id').value.trim().toUpperCase(), mob = $('#t-mobile').value, err = $('#t-err');
       if (!oid) { err.textContent = 'Please enter your order number.'; return; }
