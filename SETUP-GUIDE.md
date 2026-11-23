@@ -9,7 +9,7 @@ This guide is written for the shop owner. No programming knowledge is needed. Do
   * **Dashboard**: order counts, money collected, money still due, status breakdown, a chart of the last 14 days and recent orders.
   * **Orders**: change the status, bill amount and amount paid, message the customer, keep private notes, open WhatsApp, and export to Excel (CSV).
   * **Catalogue**: add, edit, hide or delete services, categories and prices.
-  * **Settings**: shop name, phone, WhatsApp, address, hours, UPI and announcement.
+  * **Settings**: shop name, phone, WhatsApp, address, hours, PhonePe / UPI and announcement.
 * **Customers can sign in** with Google (or just name + mobile) to see "My orders". A red badge appears when the shop updates one of their orders.
 * **E-mails are sent automatically** (free, through Gmail):
   * Both admins get an e-mail for every new order.
@@ -82,6 +82,14 @@ If your Sheet already has an `Orders` tab, `setup` keeps your existing columns a
 First time, with no deployment yet? Click **Deploy → New deployment → ⚙️ → Web app**, use the same settings as above, then **Deploy**. Copy the **Web app URL** (it ends with `/exec`) and paste it into `config.js` as `API_URL`.
 
 > ⚠️ **Every time you change `Code.gs`, you must deploy a new version (step 1D).** Otherwise the website keeps using the old code.
+
+### 1D-2. Update for version 2.1 (payments + bulk upload) – do this once
+Version 2.1 of `Code.gs` adds online payment details on orders (`paymentMethod`, `paymentStatus`, `paymentRef` columns), the "I have paid" UTR form and the admin **Bulk upload**. After the website change is merged:
+1. Paste the new `apps-script/Code.gs` into Apps Script (step 1B) and click Save.
+2. Run **`setup`** once (step 1C). It adds the 3 new columns to the `Orders` tab and keeps all your data.
+3. **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy** (step 1D). Same `/exec` address, so `config.js` does not change.
+
+Until you do this, orders still work (the payment choice is written into the order's work details), and Bulk upload still works (it saves the whole catalogue instead), but the payment status column and the "I have paid" button need the new backend.
 
 ### 1E. Optional: tracking links in e-mails
 On the website, go to Admin → **Settings** and fill in **Website address**, for example `https://www.yourshop.in/`. Customer e-mails will then include a "Track your order" link.
@@ -157,7 +165,32 @@ The new version is on the branch **`professional-v2`**, with a **pull request** 
 > Until the backend is updated, the customer order form and tracking still work. The price list uses the built-in list, and admin sign-in shows a message asking you to update the backend.
 
 ### Changing prices
-You don't need GitHub for this. Sign in as admin, go to **Catalogue**, edit the prices, then click **Save catalogue**. The change is saved in the `Catalogue` tab of your Sheet. The built-in list in `assets/catalogue.js` is only used in demo mode or when the backend can't be reached.
+You don't need GitHub for this. Sign in as admin, go to **Catalogue**, edit the prices, then click **Save catalogue**.
+
+#### Many items at once: Excel upload or paste
+In Admin → **Catalogue**, click **Bulk upload (Excel / paste)**.
+1. Click **Excel template** (downloads `items-template.xlsx`) or **CSV template** (`assets/items-template.csv`) to download the format, or **Current price list** to download everything already on the website and edit it.
+2. Fill one row per item. Columns (keep the header row):
+
+| Column | Required | Example | Notes |
+|---|---|---|---|
+| **Item Name** | yes | `Colour print (A3)` | If the name already exists on the website, that item is **updated**; otherwise it is **added**. |
+| **Category** | yes | `Printing (B/W & Colour)` | Use an existing category name. A new name creates a new category. |
+| **Price (Rs)** | yes | `30` | Number only (`₹`, `Rs` and commas are ignored). |
+| **Unit** | no | `per page` | e.g. per item, per device, per visit. |
+| **Available (Yes/No)** | no | `Yes` | `No` hides it from the website. Empty = Yes for new items, unchanged for existing ones. |
+| **Description** | no | `130 GSM paper` | Short text under the name. |
+| **Popular (Yes/No)** | no | `No` | Shows a "Popular" tag. |
+| **On-site (Yes/No)** | no | `No` | Yes asks the customer for an address. |
+
+3. Either **choose the file** (.xlsx, .xls or .csv), or select the rows in Excel / Google Sheets, copy (Ctrl+C) and **paste** them into the box, then click **Check pasted rows**. Without a header row, columns are read in the order above.
+4. Check the **preview**: each row shows *New*, *Update* or the error. Rows with errors are skipped.
+5. Click **Save … items to website**.
+
+### Payments (Cash on Delivery or PhonePe)
+* Customers choose **Cash on Delivery** (default) or **Pay now by PhonePe / UPI** when ordering. PhonePe shows the number **9989481720**, the amount, a QR code and an "Open PhonePe / UPI app" button. They can type the **UTR / transaction number** in the form, or after placing the order ("I have paid").
+* In Admin → **Orders**, the *Payment* column shows **COD**, **Not paid**, **Check UTR** or **Paid**. Open the order, check the UTR in your PhonePe app, set **Payment status → Paid (verified)**, fill **Total paid**, and click **Save update**.
+* The UPI ID in `config.js` (`UPI_ID`) is a guess (`9989481720@ybl`). Open PhonePe → your profile → copy your real UPI ID, and put it in `config.js` or in Admin → **Settings → UPI ID**. The change is saved in the `Catalogue` tab of your Sheet. The built-in list in `assets/catalogue.js` is only used in demo mode or when the backend can't be reached.
 
 ---
 
