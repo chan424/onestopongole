@@ -9,11 +9,11 @@
   var root, S = {}, POLL = App.demo ? 15000 : 60000;
   var st = {
     cat: null, catSource: 'default', backendOld: false, apiVersion: '', filter: 'all', q: '', sort: 'default', only: '',
-    form: { category: '', itemId: '', qty: 1, pay: 'COD' }, sending: false, clientRef: App.uid(),
+    form: { category: '', itemId: '', qty: 1, pay: 'COD', files: [] }, sending: false, clientRef: App.uid(),
     me: App.store.get('oss_me', { name: '', mobile: '', email: '' }),
     device: App.store.get(K('oss_my_orders'), []),        // [{orderId, key}]
     seen: App.store.get(K('oss_seen'), {}),               // orderId -> updatedAt the customer has seen
-    my: [], myBusy: false, myErr: '', track: null, trackArgs: null,
+    my: [], myBusy: false, selfUpd: {}, myErr: '', track: null, trackArgs: null,
     view: 'site', admin: { tab: 'dashboard', data: null, err: '', busy: false, ofilter: 'All', oq: '', draft: null, dirty: false, ccat: 'all' }
   };
   App.state = st;
@@ -109,6 +109,9 @@
     root.addEventListener('change', onChange);
     root.addEventListener('input', onInput);
     root.addEventListener('submit', onSubmit);
+    root.addEventListener('dragover', onDrag);
+    root.addEventListener('dragleave', onDrag);
+    root.addEventListener('drop', onDrag);
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
     setInterval(function () { if (document.visibilityState === 'hidden') return; loadMy(true); if (App.auth.isAdmin()) loadAdmin(true); }, POLL);
     route();
@@ -317,6 +320,7 @@
       '<div class="field"><label for="f-preferredDate">Preferred date <span class="opt">(optional)</span></label><input class="input" id="f-preferredDate" type="date" min="' + App.ymd(new Date()) + '"></div>' +
       '<div class="field"><label for="f-preferredTime">Time <span class="opt">(optional)</span></label><input class="input" id="f-preferredTime" type="time"></div></div>' +
       '<div class="field"><label for="f-description">Describe the work</label><textarea class="input" id="f-description" maxlength="2000" placeholder="' + h(it ? 'Any details for: ' + it.name : 'e.g. Laptop not starting / 40 pages both sides spiral / 4 cameras for shop') + '"></textarea><div class="err" data-e="description"></div></div>' +
+      (docsOn() ? '<div class="field" id="docs-f">' + docsField() + '</div>' : '') +
       '<div class="field' + (it && it.onsite ? '' : ' hide') + '" id="addr-f"><label for="f-address">Address for on-site visit</label><input class="input" id="f-address" maxlength="300" autocomplete="street-address"></div>' +
       '<div class="grid2"><div class="field"><label for="f-name">Your name</label><input class="input" id="f-name" maxlength="80" autocomplete="name" value="' + h(me.name || (u && u.name) || '') + '"><div class="err" data-e="name"></div></div>' +
       '<div class="field"><label for="f-mobile">Mobile number</label><input class="input" id="f-mobile" type="tel" inputmode="numeric" maxlength="14" autocomplete="tel" value="' + h(me.mobile || (u && u.mobile) || '') + '"><div class="err" data-e="mobile"></div></div></div>' +
@@ -330,6 +334,123 @@
       '<p class="hint center" style="margin-top:10px">By ordering you agree to be contacted about this order by phone, WhatsApp or e-mail.</p></form>';
     renderEstimate();
   }
+  /* ---------- documents for printing / Xerox ---------- */
+  // uploads need backend v2.2+ (demo mode always has them)
+  function docsOn() { var v = String(st.apiVersion || '').split('.'); return App.demo || !st.apiVersion || st.apiVersion === 'demo' || (+v[0] > 2 || (+v[0] === 2 && +(v[1] || 0) >= 2)); }
+  function docsField() {
+    var D = App.DOCS, files = st.form.files;
+    return '<label for="f-docs">Upload documents for printing / Xerox <span class="opt">(optional)</span></label>' +
+      '<label class="dropzone" for="f-docs" data-drop="order"><span class="dz-ic">' + icon('upload', 22) + '</span><span><b>Choose files</b> or drag them here' +
+      '<small>' + h(D.LABEL) + ' · up to ' + D.MAX_MB + ' MB each · max ' + D.MAX_FILES + ' files</small></span></label>' +
+      '<input class="file-in" id="f-docs" type="file" multiple accept="' + h(D.ACCEPT) + '">' +
+      '<ul class="doc-list" id="doc-sel">' + files.map(function (f, i) {
+        return '<li class="doc-row"><span class="doc-ic">' + icon('file', 18) + '</span><span class="doc-n"><b>' + h(f.name) + '</b><small>' + h(App.fileSize(f.size)) + ' · ready to upload</small></span>' +
+          '<button class="icon-btn sm" type="button" data-act="doc-remove" data-i="' + i + '" aria-label="Remove ' + h(f.name) + '" title="Remove">' + icon('x', 16) + '</button></li>';
+      }).join('') + '</ul>' +
+      (files.length ? '<p class="hint">' + files.length + ' file' + (files.length > 1 ? 's' : '') + ' selected. They upload right after you place the order.</p>' : '') +
+      '<div class="err" data-e="docs" id="docs-err"></div>';
+  }
+  function renderDocsField(msg) {
+    var el = $('#docs-f'); if (!el) return;
+    el.innerHTML = docsField();
+    if (msg) $('#docs-err').textContent = msg;
+  }
+  function addFiles(list) {
+    var files = Array.prototype.slice.call(list || []), errs = [], cur = st.form.files;
+    files.forEach(function (f) {
+      var bad = App.checkDoc(f);
+      if (bad) return errs.push(bad);
+      if (cur.some(function (x) { return x.name === f.name && x.size === f.size; })) return;
+      if (cur.length >= App.DOCS.MAX_FILES) return errs.push('Only ' + App.DOCS.MAX_FILES + ' files per order. "' + f.name + '" was not added.');
+      cur.push(f);
+    });
+    renderDocsField(errs.join(' '));
+  }
+  function docStateHtml(j) {
+    if (j.state === 'up') return '<span class="doc-st up"><span class="spin dark"></span> Uploading...</span>';
+    if (j.state === 'ok') return '<span class="doc-st ok">' + icon('check', 15) + ' Uploaded</span>';
+    if (j.state === 'err') return '<span class="doc-st bad">' + icon('x', 15) + ' Failed</span>';
+    return '<span class="doc-st">Waiting</span>';
+  }
+  function drawUploads(U) {
+    var ok = U.jobs.filter(function (j) { return j.state === 'ok'; }).length, bad = U.jobs.filter(function (j) { return j.state === 'err'; }).length;
+    var busy = U.jobs.some(function (j) { return j.state === 'up' || j.state === 'wait'; });
+    U.box.innerHTML = '<div class="doc-up"><h4 class="sub-h">' + icon('clip', 17) + ' Documents for order ' + h(U.orderId) + '</h4><ul class="doc-list">' + U.jobs.map(function (j) {
+      return '<li class="doc-row' + (j.state === 'err' ? ' bad' : '') + '"><span class="doc-ic">' + icon('file', 18) + '</span><span class="doc-n"><b>' + h(j.file.name) + '</b><small>' + h(App.fileSize(j.file.size)) +
+        (j.msg ? ' · <span class="err">' + h(j.msg) + '</span>' : '') + '</small></span>' + docStateHtml(j) + '</li>';
+    }).join('') + '</ul>' +
+      (busy ? '<p class="hint">Please keep this page open until the upload finishes.</p>' :
+        bad ? '<div class="note warn"><span>' + bad + ' file' + (bad > 1 ? 's' : '') + ' could not be uploaded.' + (S.WHATSAPP ? ' Try again, or send ' + (bad > 1 ? 'them' : 'it') + ' to us on WhatsApp with your order number.' : '') + '</span><button class="btn sm" type="button" data-act="doc-retry">' + icon('refresh', 15) + ' Try again</button></div>' :
+          '<div class="note"><span>' + icon('check', 16) + ' ' + ok + ' document' + (ok > 1 ? 's' : '') + ' received by the shop.</span></div>') + '</div>';
+  }
+  /* uploads files one by one for an order (needs the private tracking key) */
+  function uploadDocs(orderId, key, files, box, after) {
+    var U = { orderId: orderId, key: key, box: box, after: after, jobs: files.map(function (f) { return { file: f, ref: App.uid('u'), state: 'wait', msg: '' }; }) };
+    box._uploads = U;
+    return runUploads(U);
+  }
+  function runUploads(U) {
+    var i = 0;
+    drawUploads(U);
+    function next() {
+      while (i < U.jobs.length && U.jobs[i].state !== 'wait') i++;
+      if (i >= U.jobs.length) { drawUploads(U); if (U.after) U.after(U); return Promise.resolve(U); }
+      var j = U.jobs[i]; j.state = 'up'; j.msg = ''; drawUploads(U);
+      return App.readBase64(j.file).then(function (b64) {
+        return App.api('uploadDocument', { orderId: U.orderId, key: U.key, name: j.file.name, mimeType: j.file.type || '', size: j.file.size, data: b64, uploadRef: j.ref }, { retries: 1, timeout: 180000 });
+      }).then(function () { j.state = 'ok'; st.selfUpd[U.orderId] = 1; }, function (e) {
+        j.state = 'err';
+        j.msg = e && e.code === 'OLD_BACKEND' ? 'The shop has not switched on online uploads yet.' : (e && e.message) || 'Upload failed.';
+      }).then(next);
+    }
+    return next();
+  }
+  function retryUploads(t) {
+    var box = t.closest('.doc-upbox'), U = box && box._uploads; if (!U) return;
+    U.jobs.forEach(function (j) { if (j.state === 'err') j.state = 'wait'; });
+    runUploads(U);
+  }
+  function afterOrderViewUpload(U) {
+    loadMy(true);
+    if (U.jobs.some(function (j) { return j.state === 'err'; })) return;
+    if (st.track && st.track.orderId === U.orderId && st.trackArgs && $('#t-result') && $('#t-result').contains(U.box)) {
+      setTimeout(function () { App.api('trackOrder', st.trackArgs, { retries: 0 }).then(function (o) { st.track = o; renderTrackResult(); }, function () {}); }, 1500);
+    }
+  }
+  function onDrag(ev) {
+    var z = ev.target.closest && ev.target.closest('[data-drop]'); if (!z) return;
+    ev.preventDefault();
+    if (ev.type === 'dragover') { z.classList.add('over'); return; }
+    z.classList.remove('over');
+    if (ev.type !== 'drop' || !ev.dataTransfer) return;
+    if (z.getAttribute('data-drop') === 'order') addFiles(ev.dataTransfer.files);
+    else { var inp = z.parentNode.querySelector('.doc-add-in'); if (inp) startAddDocs(inp, ev.dataTransfer.files); }
+  }
+  function startAddDocs(inp, list) {
+    var files = Array.prototype.slice.call(list || []), errs = [], ok = [];
+    var have = Number(inp.getAttribute('data-count')) || 0;
+    files.forEach(function (f) {
+      var bad = App.checkDoc(f);
+      if (bad) errs.push(bad); else if (have + ok.length >= App.DOCS.MAX_FILES) errs.push('Only ' + App.DOCS.MAX_FILES + ' files per order.'); else ok.push(f);
+    });
+    var wrap = inp.closest('.doc-add'), er = wrap.querySelector('.err'), box = wrap.querySelector('.doc-upbox');
+    er.textContent = errs.join(' ');
+    if (!ok.length) return;
+    if (box._uploads && box._uploads.jobs.some(function (j) { return j.state === 'up' || j.state === 'wait'; })) { er.textContent = 'Please wait for the current upload to finish.'; return; }
+    inp.setAttribute('data-count', have + ok.length);
+    uploadDocs(inp.getAttribute('data-order'), inp.getAttribute('data-key'), ok, box, afterOrderViewUpload);
+  }
+  function orderDocs(o) {
+    var docs = o.documents || [], open = o.status !== 'Completed' && o.status !== 'Cancelled', D = App.DOCS;
+    if (!docs.length && !(open && o.trackKey && docsOn())) return '';
+    return '<h4 class="sub-h">' + icon('clip', 17) + ' Documents' + (docs.length ? ' (' + docs.length + ')' : '') + '</h4>' +
+      (docs.length ? '<ul class="doc-list">' + docs.map(function (d) {
+        return '<li class="doc-row"><span class="doc-ic">' + icon('file', 18) + '</span><span class="doc-n"><b>' + h(d.name) + '</b><small>' + h(App.fileSize(d.size)) + (d.at ? ' · ' + h(App.fmtDateTime(d.at)) : '') + '</small></span><span class="doc-st ok">' + icon('check', 15) + ' Received</span></li>';
+      }).join('') + '</ul>' : '<p class="muted small">No documents uploaded yet.</p>') +
+      (open && o.trackKey && docs.length < D.MAX_FILES && docsOn() ? '<div class="doc-add"><label class="dropzone sm" data-drop="add"><input class="file-in doc-add-in" type="file" multiple accept="' + h(D.ACCEPT) + '" data-order="' + h(o.orderId) + '" data-key="' + h(o.trackKey) + '" data-count="' + docs.length + '">' +
+        '<span class="dz-ic">' + icon('upload', 18) + '</span><span><b>Add documents</b> for printing / Xerox<small>' + h(D.LABEL) + ' · up to ' + D.MAX_MB + ' MB each</small></span></label><div class="err"></div><div class="doc-upbox"></div></div>' : '');
+  }
+
   function estimateNow() { var it = itemById(st.form.itemId), q = Math.max(1, Math.floor(Number(st.form.qty) || 1)); return it ? it.price * q : 0; }
   function renderPayNow() {
     var el = $('#pay-now'); if (!el) return;
@@ -368,6 +489,9 @@
     if (!App.mobileOk(d.mobile)) e.mobile = 'Enter a valid 10-digit mobile number.';
     if (d.email && !App.emailOk(d.email)) e.email = 'This e-mail address does not look right.';
     if (d.paymentRef && d.paymentRef.length < 6) e.paymentRef = 'The UTR number looks too short. Leave it empty if you have not paid yet.';
+    var files = docsOn() ? st.form.files.slice() : [];
+    if (files.length > App.DOCS.MAX_FILES) e.docs = 'Please choose at most ' + App.DOCS.MAX_FILES + ' files.';
+    else files.forEach(function (f) { var bad = App.checkDoc(f); if (bad && !e.docs) e.docs = bad; });
     showErrors(e); $('#form-err').textContent = '';
     if (Object.keys(e).length) return;
     if (it && (st.backendOld || st.catSource === 'default')) d.description = 'Item: ' + it.name + ' (' + money(it.price) + ' ' + (it.unit || '') + ')' + (d.description ? '\n' + d.description : '');
@@ -383,8 +507,10 @@
       App.store.set(K('oss_my_orders'), st.device);
       if (res.order) { st.seen[res.orderId] = res.order.updatedAt; App.store.set(K('oss_seen'), st.seen); }
       st.clientRef = App.uid();
+      st.form.files = [];
       if (App.demo && res.demoNotified) App.toast('Demo: e-mail notification sent to ' + res.demoNotified + '.');
-      renderDone(res, d, it);
+      renderDone(res, d, it, files);
+      if (files.length && res.trackKey && $('#doc-up')) uploadDocs(res.orderId, res.trackKey, files, $('#doc-up'), function () { loadMy(true); });
       var mo = $('#myorders'); if (mo) mo.classList.remove('hide');
       loadMy(true);
     }, function (err) {
@@ -401,8 +527,9 @@
       '\nItem: ' + (it ? it.name + ' x ' + q + ' @ ' + money(it.price) + ' ' + (it.unit || '') : ((catById(d.service) || {}).name || d.service) + ' x ' + q) +
       '\nTotal: ' + (total ? money(total) : 'to be confirmed') + '\nPayment: ' + pay + (d.description && (!it || d.description !== it.name) ? '\nDetails: ' + d.description.slice(0, 300) : '') + (link ? '\nTrack: ' + link : '');
   }
-  function renderDone(res, d, it) {
+  function renderDone(res, d, it, files) {
     st.lastDone = { res: res, d: d, it: it }; st.form.pay = 'COD';
+    var nDocs = (files || []).length;
     var link = trackLink(res.orderId, res.trackKey);
     var wa = '<a class="btn wa" target="_blank" rel="noopener" href="' + h(App.waLink(S.WHATSAPP, orderWaText(res, d, it))) + '">' + icon('chat', 18) + ' Send order on WhatsApp</a>';
     var total = it ? it.price * (Number(d.quantity) || 1) : 0;
@@ -412,7 +539,8 @@
       '<div class="field"><label class="hide-sm">&nbsp;</label><button class="btn block" id="pay-go" type="submit">' + icon('check', 17) + ' I have paid</button></div></div><div class="err" id="pay-err"></div></form>') + '</div>'
       : '<p class="muted small">Payment: <b>Cash on Delivery</b>.</p>';
     $('#orderbox').innerHTML = '<div class="done"><div class="tick">' + icon('check', 34) + '</div><h3>Order placed. Thank you, ' + h(d.name) + '!</h3><p class="muted">Your order number is</p><div class="oid">' + h(res.orderId) + '</div>' +
-      '<p class="muted">' + (d.email ? (res.emailed ? 'A confirmation has been e-mailed to you. ' : '') : '') + 'Keep this number to track your order. ' + (S.WHATSAPP ? 'Send it to us on WhatsApp with your files for faster service.' : '') + '</p>' + pay +
+      '<p class="muted">' + (d.email ? (res.emailed ? 'A confirmation has been e-mailed to you. ' : '') : '') + 'Keep this number to track your order. ' + (S.WHATSAPP ? (nDocs ? 'You can also send it to us on WhatsApp for faster service.' : 'Send it to us on WhatsApp with your files for faster service, or add documents from "Track this order".') : '') + '</p>' +
+      (nDocs ? '<div class="doc-upbox" id="doc-up"></div>' : '') + pay +
       '<div class="row center">' + (S.WHATSAPP ? wa : '') + '<button class="btn" data-track-id="' + h(res.orderId) + '" data-track-key="' + h(res.trackKey || '') + '">' + icon('search', 18) + ' Track this order</button>' +
       (link ? '<button class="btn ghost" data-copy="' + h(link) + '">' + icon('link', 18) + ' Copy tracking link</button>' : '') +
       '<button class="btn ghost" data-act="again">' + icon('plus', 18) + ' Place another order</button></div></div>';
@@ -456,12 +584,12 @@
       '<dl class="kv"><dt>Payment</dt><dd>' + h(payLabel(o)) + '</dd><dt>Service</dt><dd>' + h(o.itemName || o.service) + (o.itemName && o.service ? ' <span class="muted">(' + h(o.service) + ')</span>' : '') + '</dd><dt>Quantity</dt><dd>' + h(o.quantity) + '</dd>' +
       (o.description ? '<dt>Work</dt><dd>' + App.nl2br(o.description) + '</dd>' : '') +
       (o.preferredDate ? '<dt>Preferred</dt><dd>' + h(App.fmtDate(o.preferredDate)) + (o.preferredTime ? ', ' + h(App.fmtClock(o.preferredTime)) : '') + '</dd>' : '') +
-      '<dt>Placed on</dt><dd>' + h(App.fmtDateTime(o.createdAt)) + '</dd></dl>' +
+      '<dt>Placed on</dt><dd>' + h(App.fmtDateTime(o.createdAt)) + '</dd></dl>' + orderDocs(o) +
       '<h4 class="sub-h">Updates</h4>' + timeline(o.timeline || []) + '</div>';
   }
   function timeline(tl) {
     return '<ul class="timeline">' + tl.slice().reverse().map(function (t) {
-      var title = t.type === 'created' ? 'Order placed' : t.type === 'payment' ? 'Payment' : t.status ? 'Status: ' + t.status : 'Message from the shop';
+      var title = t.type === 'created' ? 'Order placed' : t.type === 'payment' ? 'Payment' : t.type === 'document' ? 'Document uploaded' : t.status ? 'Status: ' + t.status : 'Message from the shop';
       return '<li' + (t.visible === false ? ' class="internal"' : '') + '><b>' + h(title) + (t.visible === false ? ' <span class="tag">internal</span>' : '') + '</b><div class="when">' + h(App.fmtDateTime(t.at)) + (t.by ? ' · ' + h(t.by) : '') + '</div>' + (t.message ? '<div>' + App.nl2br(t.message) + '</div>' : '') + '</li>';
     }).join('') + '</ul>';
   }
@@ -505,6 +633,7 @@
       list.sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; });
       var changed = [];
       list.forEach(function (o) {
+        if (st.selfUpd[o.orderId]) { delete st.selfUpd[o.orderId]; st.seen[o.orderId] = o.updatedAt; return; }   // the customer's own upload, not news
         if (st.seen[o.orderId] === undefined) st.seen[o.orderId] = o.updatedAt;     // first time we see it: nothing new
         else if (st.seen[o.orderId] !== o.updatedAt && !st.my.some(function (p) { return p.orderId === o.orderId && p.updatedAt === o.updatedAt; })) changed.push(o);
       });
@@ -619,6 +748,8 @@
       case 'close': closeModal(); break;
       case 'close-bg': if (ev.target === t) closeModal(); break;
       case 'again': renderOrderForm(); break;
+      case 'doc-remove': st.form.files.splice(Number(t.getAttribute('data-i')), 1); renderDocsField(); break;
+      case 'doc-retry': retryUploads(t); break;
       case 'track-refresh': if (st.trackArgs) loadTrack(st.trackArgs); break;
       case 'my-refresh': loadMy(false); break;
       case 'mark-seen': st.my.forEach(function (o) { st.seen[o.orderId] = o.updatedAt; }); App.store.set(K('oss_seen'), st.seen); renderMy(); renderHeader(); break;
@@ -630,6 +761,8 @@
     if (id === 'f-category') { st.form.category = ev.target.value; st.form.itemId = ''; keepForm(renderOrderForm); }
     else if (id === 'f-item') { st.form.itemId = ev.target.value; keepForm(renderOrderForm); }
     else if (ev.target.name === 'f-pay') { st.form.pay = ev.target.value; root.querySelectorAll('.pay-pick .pp').forEach(function (l) { l.classList.toggle('on', l.querySelector('input').checked); }); renderPayNow(); }
+    else if (id === 'f-docs') { addFiles(ev.target.files); ev.target.value = ''; }
+    else if (ev.target.classList && ev.target.classList.contains('doc-add-in')) { startAddDocs(ev.target, ev.target.files); ev.target.value = ''; }
     else if (id === 'cat-sort') { st.sort = ev.target.value; renderItems(); }
     else if (id === 'cat-only') { st.only = ev.target.value; renderItems(); }
     else if (App.adminChange) App.adminChange(ev);

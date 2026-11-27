@@ -37,6 +37,11 @@ var EMAIL_ADMINS_ON_NEW_ORDER = true;
 var EMAIL_CUSTOMER_ON_NEW_ORDER = true;
 var EMAIL_CUSTOMER_ON_STATUS_CHANGE = true;
 
+// Customer documents for printing / Xerox (saved privately in YOUR Google Drive)
+var UPLOAD_FOLDER_NAME = 'One Stop Solution - Customer documents';
+var MAX_UPLOAD_MB = 10;            // per file (Apps Script can receive about 50 MB per request)
+var MAX_FILES_PER_ORDER = 10;
+
 /*
  * OPTIONAL automatic WhatsApp / SMS (all OFF by default).
  * Do NOT type secret keys in this file if you keep a copy on GitHub.
@@ -55,13 +60,20 @@ var EMAIL_CUSTOMER_ON_STATUS_CHANGE = true;
 
 /* -------------------- 2. NOTHING TO CHANGE BELOW -------------------- */
 
-var VERSION = '2.1';
+var VERSION = '2.2';
 var STATUSES = ['Pending', 'Confirmed', 'In Progress', 'Ready', 'Completed', 'Cancelled'];
 var PAY_METHODS = ['COD', 'PhonePe'];
 var PAY_STATUSES = ['COD', 'Awaiting payment', 'Paid - pending verification', 'Paid - verified'];
 var ORDER_COLS = ['orderId', 'createdAt', 'updatedAt', 'status', 'service', 'serviceName', 'itemId', 'itemName', 'unitPrice', 'unit',
   'quantity', 'estimate', 'description', 'preferredDate', 'preferredTime', 'address', 'name', 'mobile', 'email', 'customerEmail',
-  'source', 'amountQuoted', 'amountPaid', 'adminNotes', 'timeline', 'trackKey', 'clientRef', 'paymentMethod', 'paymentStatus', 'paymentRef'];
+  'source', 'amountQuoted', 'amountPaid', 'adminNotes', 'timeline', 'trackKey', 'clientRef', 'paymentMethod', 'paymentStatus', 'paymentRef', 'documents'];
+// allowed document types: extension -> [MIME type, file signature check]
+var DOC_TYPES = {
+  pdf: ['application/pdf', 'pdf'], doc: ['application/msword', 'ole'], docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'zip'],
+  xls: ['application/vnd.ms-excel', 'ole'], xlsx: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'zip'],
+  ppt: ['application/vnd.ms-powerpoint', 'ole'], pptx: ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'zip'],
+  jpg: ['image/jpeg', 'jpg'], jpeg: ['image/jpeg', 'jpg'], png: ['image/png', 'png']
+};
 var CAT_COLS = ['type', 'id', 'category', 'name', 'price', 'unit', 'desc', 'icon', 'tone', 'order', 'active', 'popular', 'onsite'];
 var SETTING_KEYS = ['BUSINESS_NAME', 'BUSINESS_SUBTITLE', 'TAGLINE', 'PHONE', 'WHATSAPP', 'EMAIL', 'ADDRESS', 'HOURS', 'MAP_LINK',
   'UPI_ID', 'UPI_NAME', 'PHONEPE_NUMBER', 'ABOUT', 'ANNOUNCEMENT', 'SITE_URL'];
@@ -84,6 +96,8 @@ function doPost(e) {
       case 'createOrder': return createOrder_(p);
       case 'trackOrder': return trackOrder_(p);
       case 'submitPayment': return submitPayment_(p);
+      case 'uploadDocument': return uploadDocument_(p);
+      case 'getDocument': requireAdmin_(p); return getDocument_(p);
       case 'myOrders': return myOrders_(p);
       case 'adminData': requireAdmin_(p); return adminData_();
       case 'updateOrder': return updateOrder_(p, requireAdmin_(p));
@@ -111,7 +125,9 @@ function setup() {
   // ask for e-mail and internet permissions now, so the first real order does not fail
   MailApp.getRemainingDailyQuota();
   UrlFetchApp.getRequest('https://oauth2.googleapis.com/tokeninfo');
-  Logger.log('Setup complete for sheet: ' + ss.getName() + '. E-mails left today: ' + MailApp.getRemainingDailyQuota());
+  // ask for Google Drive permission and create the private folder for customer documents
+  var folder = uploadFolder_();
+  Logger.log('Setup complete for sheet: ' + ss.getName() + '. E-mails left today: ' + MailApp.getRemainingDailyQuota() + '. Customer documents folder: ' + folder.getUrl());
 }
 
 /* ---------- helpers: replies & errors ---------- */
@@ -364,14 +380,20 @@ function rowToOrder_(r) {
     address: str_(r.address), name: str_(r.name), mobile: str_(r.mobile), email: str_(r.email), customerEmail: str_(r.customerEmail), source: str_(r.source) || 'website',
     amountQuoted: quoted, amountPaid: paid, balance: Math.max(0, quoted - paid), adminNotes: str_(r.adminNotes, 3000),
     timeline: parseTimeline_(r.timeline), trackKey: str_(r.trackKey), _row: r._row,
-    paymentMethod: str_(r.paymentMethod) || 'COD', paymentStatus: str_(r.paymentStatus) || 'COD', paymentRef: str_(r.paymentRef, 60)
+    paymentMethod: str_(r.paymentMethod) || 'COD', paymentStatus: str_(r.paymentStatus) || 'COD', paymentRef: str_(r.paymentRef, 60),
+    documents: parseDocs_(r.documents)
   };
+}
+function parseDocs_(v) {
+  var t; try { t = JSON.parse(v || '[]'); } catch (e) { t = []; }
+  return Array.isArray(t) ? t.filter(function (d) { return d && d.id; }) : [];
 }
 function publicOrder_(o) {
   return { orderId: o.orderId, createdAt: o.createdAt, updatedAt: o.updatedAt, status: o.status, service: o.serviceName, itemName: o.itemName, unitPrice: o.unitPrice,
     unit: o.unit, quantity: o.quantity, estimate: o.estimate, description: o.description, preferredDate: o.preferredDate, preferredTime: o.preferredTime,
     amountQuoted: o.amountQuoted, amountPaid: o.amountPaid, balance: o.balance, trackKey: o.trackKey,
     paymentMethod: o.paymentMethod, paymentStatus: o.paymentStatus, paymentRef: o.paymentRef,
+    documents: o.documents.map(function (d) { return { name: d.name, size: d.size, at: d.at }; }),   // names only, never the Drive file id
     timeline: o.timeline.filter(function (t) { return t.visible !== false; }).map(function (t) { return { at: t.at, type: t.type, status: t.status || '', message: t.message || '' }; }) };
 }
 function adminOrder_(o) { var c = JSON.parse(JSON.stringify(o)); delete c._row; return c; }
@@ -430,7 +452,7 @@ function createOrder_(p) {
       customerEmail: user && !admin ? user.email : '', source: admin ? 'admin' : 'website', amountQuoted: '', amountPaid: 0, adminNotes: '',
       timeline: JSON.stringify([{ at: now, type: 'created', status: 'Pending', visible: true,
         message: d.paymentMethod === 'PhonePe' ? 'Payment: PhonePe / UPI' + (d.paymentRef ? ' (UTR ' + d.paymentRef + ') - waiting for the shop to verify.' : ' - not paid yet.') : 'Payment: Cash on Delivery' }]),
-      trackKey: randKey_(), clientRef: ref
+      trackKey: randKey_(), clientRef: ref, documents: '[]'
     });
     writeRow_(ordersSheet_(), o);
     return { order: findOrder_(o.orderId) };
@@ -463,7 +485,7 @@ function submitPayment_(p) {
     if (o.paymentStatus === 'Paid - verified') throw err_('INVALID', 'The payment for this order is already verified.');
     var now = new Date().toISOString(), tl = o.timeline;
     tl.push({ at: now, type: 'payment', message: 'Customer paid by PhonePe / UPI. UTR: ' + ref + ' - waiting for the shop to verify.', visible: true });
-    var copy = Object.assign({}, o, { paymentMethod: 'PhonePe', paymentStatus: 'Paid - pending verification', paymentRef: ref, updatedAt: now, timeline: JSON.stringify(tl) });
+    var copy = Object.assign({}, o, { paymentMethod: 'PhonePe', paymentStatus: 'Paid - pending verification', paymentRef: ref, updatedAt: now, timeline: JSON.stringify(tl), documents: JSON.stringify(o.documents) });
     var row = o._row; delete copy._row; delete copy.balance;
     var sh = ordersSheet_(), raw = readRows_(sh).filter(function (r) { return r._row === row; })[0];
     writeRow_(sh, Object.assign({}, raw, copy), row);
@@ -515,7 +537,7 @@ function updateOrder_(p, admin) {
     if (statusChanged || msg) { tl.push({ at: now, type: statusChanged ? 'status' : 'note', status: statusChanged ? o.status : '', message: msg, visible: p.visible !== false, by: admin.email }); changed = true; }
     if (!changed) throw err_('INVALID', 'Nothing to save.');
     o.updatedAt = now;
-    var row = o._row, copy = Object.assign({}, o, { timeline: JSON.stringify(tl) });
+    var row = o._row, copy = Object.assign({}, o, { timeline: JSON.stringify(tl), documents: JSON.stringify(o.documents) });
     delete copy._row; delete copy.balance;
     var sh = ordersSheet_(), raw = readRows_(sh).filter(function (r) { return r._row === row; })[0];
     writeRow_(sh, Object.assign({}, raw, copy), row);
@@ -527,6 +549,105 @@ function updateOrder_(p, admin) {
   }
   var out = adminOrder_(o); out.notified = notified;
   return out;
+}
+
+/* ---------- customer documents (printing / Xerox files) ---------- */
+/** The private Drive folder that holds every uploaded document (one sub-folder per order). */
+function uploadFolder_() {
+  var props = PropertiesService.getScriptProperties(), id = props.getProperty('UPLOAD_FOLDER_ID'), folder = null;
+  if (id) { try { folder = DriveApp.getFolderById(id); if (folder.isTrashed()) folder = null; } catch (e) { folder = null; } }
+  if (!folder) {
+    folder = DriveApp.createFolder(UPLOAD_FOLDER_NAME);
+    folder.setDescription('Files uploaded by customers with their orders. Created by the website backend. Do not rename the order sub-folders.');
+    props.setProperty('UPLOAD_FOLDER_ID', folder.getId());
+    // let the other admins open the folder in Drive too (the website download button works without this)
+    var me = ''; try { me = String(Session.getEffectiveUser().getEmail() || '').toLowerCase(); } catch (e) {}
+    ADMIN_EMAILS.forEach(function (a) { if (String(a).toLowerCase() !== me) { try { folder.addEditor(a); } catch (e) { Logger.log('Could not share the documents folder with ' + a + ': ' + e); } } });
+  }
+  return folder;
+}
+function orderFolder_(orderId) {
+  var root = uploadFolder_(), it = root.getFoldersByName(orderId);
+  return it.hasNext() ? it.next() : root.createFolder(orderId);
+}
+function docExt_(name) { var m = /\.([A-Za-z0-9]{1,5})$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+function safeFileName_(name) {
+  var n = String(name || '').replace(/[\\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (n.length > 120) { var ext = docExt_(n); n = n.slice(0, 110 - ext.length).trim() + (ext ? '.' + ext : ''); }
+  return n || 'document';
+}
+/** Checks the first bytes so a renamed program or script can not be uploaded as a "PDF". */
+function signatureOk_(bytes, kind) {
+  var b = function (i) { return bytes[i] & 255; };
+  if (bytes.length < 4) return false;
+  if (kind === 'pdf') return b(0) === 0x25 && b(1) === 0x50 && b(2) === 0x44 && b(3) === 0x46;                 // %PDF
+  if (kind === 'png') return b(0) === 0x89 && b(1) === 0x50 && b(2) === 0x4E && b(3) === 0x47;
+  if (kind === 'jpg') return b(0) === 0xFF && b(1) === 0xD8 && b(2) === 0xFF;
+  if (kind === 'zip') return b(0) === 0x50 && b(1) === 0x4B && b(2) === 0x03 && b(3) === 0x04;                 // .docx / .xlsx / .pptx
+  if (kind === 'ole') return b(0) === 0xD0 && b(1) === 0xCF && b(2) === 0x11 && b(3) === 0xE0;                 // .doc / .xls / .ppt
+  return false;
+}
+
+/** Customer uploads one document for an order. Needs the order's private tracking key. */
+function uploadDocument_(p) {
+  var fail = err_('NOT_FOUND', 'Order not found. Please refresh the page and try again.');
+  var o = findOrder_(p.orderId);
+  if (!o || !p.key || String(p.key) !== o.trackKey) throw fail;
+  if (o.status === 'Completed' || o.status === 'Cancelled') throw err_('INVALID', 'This order is ' + o.status.toLowerCase() + '. Please place a new order to send more documents.');
+  var ref = str_(p.uploadRef, 40);
+  var dupOf = function (ord) { if (!ref) return null; for (var i = 0; i < ord.documents.length; i++) if (ord.documents[i].ref === ref) return ord.documents[i]; return null; };
+  var dup = dupOf(o);
+  if (dup) return { orderId: o.orderId, document: { name: dup.name, size: dup.size, at: dup.at }, count: o.documents.length, duplicate: true };
+  if (o.documents.length >= MAX_FILES_PER_ORDER) throw err_('LIMIT', 'You can upload up to ' + MAX_FILES_PER_ORDER + ' files per order. Please send other files on WhatsApp.');
+  var name = safeFileName_(p.name), ext = docExt_(name), type = DOC_TYPES[ext];
+  if (!type) throw err_('INVALID', '"' + name + '" is not supported. Please upload PDF, Word (DOC/DOCX), Excel, PowerPoint, JPG or PNG files.');
+  var data = String(p.data || '').replace(/^data:[^,]*,/, '').replace(/\s/g, '');
+  if (!data) throw err_('INVALID', 'The file "' + name + '" is empty.');
+  if (data.length > Math.ceil(MAX_UPLOAD_MB * 1024 * 1024 * 4 / 3) + 8) throw err_('INVALID', '"' + name + '" is larger than ' + MAX_UPLOAD_MB + ' MB.');
+  var bytes;
+  try { bytes = Utilities.base64Decode(data); } catch (e) { throw err_('INVALID', 'The file "' + name + '" could not be read. Please try again.'); }
+  if (!bytes.length) throw err_('INVALID', 'The file "' + name + '" is empty.');
+  if (bytes.length > MAX_UPLOAD_MB * 1024 * 1024) throw err_('INVALID', '"' + name + '" is larger than ' + MAX_UPLOAD_MB + ' MB.');
+  if (!signatureOk_(bytes, type[1])) throw err_('INVALID', '"' + name + '" does not look like a real .' + ext + ' file. Please export it again and retry.');
+
+  // save to Drive first (slow part), outside the lock
+  var file = orderFolder_(o.orderId).createFile(Utilities.newBlob(bytes, type[0], name));
+  file.setDescription('Order ' + o.orderId + ' - ' + o.name + ' (' + o.mobile + ')');
+  var meta = { id: file.getId(), name: name, size: bytes.length, mimeType: type[0], at: new Date().toISOString(), url: file.getUrl(), ref: ref };
+
+  var res;
+  try {
+    res = withLock_(function () {
+      var cur = findOrder_(o.orderId);
+      if (!cur) throw fail;
+      var d2 = dupOf(cur);
+      if (d2) return { dup: d2, order: cur };
+      if (cur.documents.length >= MAX_FILES_PER_ORDER) throw err_('LIMIT', 'You can upload up to ' + MAX_FILES_PER_ORDER + ' files per order.');
+      var docs = cur.documents.concat([meta]), tl = cur.timeline;
+      tl.push({ at: meta.at, type: 'document', message: 'Document uploaded: ' + name + ' (' + Math.max(1, Math.round(bytes.length / 1024)) + ' KB)', visible: true });
+      var copy = Object.assign({}, cur, { updatedAt: meta.at, timeline: JSON.stringify(tl), documents: JSON.stringify(docs) });
+      var row = cur._row; delete copy._row; delete copy.balance;
+      var sh = ordersSheet_(), raw = readRows_(sh).filter(function (r) { return r._row === row; })[0];
+      writeRow_(sh, Object.assign({}, raw, copy), row);
+      return { order: findOrder_(cur.orderId) };
+    });
+  } catch (e) { try { file.setTrashed(true); } catch (x) {} throw e; }
+  if (res.dup) { try { file.setTrashed(true); } catch (x) {} meta = res.dup; }
+  return { orderId: o.orderId, document: { name: meta.name, size: meta.size, at: meta.at }, count: res.order.documents.length, duplicate: !!res.dup };
+}
+
+/** Admin downloads a customer document straight from the admin panel (file content is returned as base64). */
+function getDocument_(p) {
+  var o = findOrder_(p.orderId);
+  if (!o) throw err_('NOT_FOUND', 'Order not found.');
+  var doc = null;
+  o.documents.forEach(function (d) { if (d.id === str_(p.docId, 200)) doc = d; });
+  if (!doc) throw err_('NOT_FOUND', 'This document is not attached to order ' + o.orderId + '.');
+  var file;
+  try { file = DriveApp.getFileById(doc.id); } catch (e) { throw err_('NOT_FOUND', 'The file "' + doc.name + '" was not found in Google Drive (it may have been deleted).'); }
+  if (file.isTrashed()) throw err_('NOT_FOUND', 'The file "' + doc.name + '" is in the Google Drive trash. Restore it to download.');
+  var blob = file.getBlob();
+  return { orderId: o.orderId, docId: doc.id, name: doc.name, mimeType: blob.getContentType() || doc.mimeType || 'application/octet-stream', size: doc.size, data: Utilities.base64Encode(blob.getBytes()) };
 }
 
 /* ---------- notifications ---------- */

@@ -133,7 +133,8 @@
     box.innerHTML = list.length ? '<table class="rtable"><thead><tr><th>Order</th><th>Customer</th><th>Service</th><th>Status</th><th class="right">Bill</th><th class="right">Paid</th><th>Payment</th><th>Placed</th><th></th></tr></thead><tbody>' +
       list.map(function (x) {
         return '<tr data-a="open-order" data-id="' + h(x.orderId) + '"><td data-l="Order"><b>' + h(x.orderId) + '</b>' + (nw.indexOf(x) >= 0 ? ' <span class="badge">New</span>' : '') + '</td>' +
-          '<td data-l="Customer">' + h(x.name) + '<small class="muted d-block">' + h(x.mobile) + '</small></td><td data-l="Service">' + h(x.itemName || x.serviceName) + (x.quantity > 1 ? ' <span class="muted">x' + h(x.quantity) + '</span>' : '') + '</td>' +
+          '<td data-l="Customer">' + h(x.name) + '<small class="muted d-block">' + h(x.mobile) + '</small></td><td data-l="Service">' + h(x.itemName || x.serviceName) + (x.quantity > 1 ? ' <span class="muted">x' + h(x.quantity) + '</span>' : '') +
+          ((x.documents || []).length ? ' <span class="tag doc-tag" title="' + h(x.documents.length + ' customer document' + (x.documents.length > 1 ? 's' : '')) + '">' + icon('clip', 13) + ' ' + x.documents.length + '</span>' : '') + '</td>' +
           '<td data-l="Status">' + App.pill(x.status) + '</td><td data-l="Bill" class="right">' + (x.amountQuoted ? money(x.amountQuoted) : (x.estimate ? '<span class="muted">~' + money(x.estimate) + '</span>' : '-')) + '</td>' +
           '<td data-l="Paid" class="right">' + (x.amountPaid ? money(x.amountPaid) : '-') + '</td><td data-l="Payment">' + payPill(x) + (x.paymentRef ? '<small class="muted d-block">UTR ' + h(x.paymentRef) + '</small>' : '') + '</td><td data-l="Placed">' + h(App.fmtDate(x.createdAt)) + '</td><td class="right act-c"><span class="btn ghost sm">Open</span></td></tr>';
       }).join('') + '</tbody></table>' : '<div class="empty">' + icon('list', 28) + '<p>No orders match.</p></div>';
@@ -157,7 +158,7 @@
       '<dt>Service</dt><dd>' + h(o.itemName || '-') + '<small class="muted d-block">' + h(o.serviceName) + '</small></dd><dt>Quantity</dt><dd>' + h(o.quantity) + (o.unitPrice ? ' × ' + money(o.unitPrice) + ' ' + h(o.unit) : '') + '</dd>' +
       (o.estimate ? '<dt>Estimate</dt><dd>' + money(o.estimate) + '</dd>' : '') + (o.description ? '<dt>Work</dt><dd>' + App.nl2br(o.description) + '</dd>' : '') +
       (o.preferredDate ? '<dt>Preferred</dt><dd>' + h(App.fmtDate(o.preferredDate)) + ' ' + h(App.fmtClock(o.preferredTime)) + '</dd>' : '') + (o.address ? '<dt>Address</dt><dd>' + h(o.address) + '</dd>' : '') +
-      (o.customerEmail ? '<dt>Signed in as</dt><dd>' + h(o.customerEmail) + '</dd>' : '') + '</dl><h4 class="sub-h">Timeline</h4>' + site.timeline(o.timeline || []) + '</div>' +
+      (o.customerEmail ? '<dt>Signed in as</dt><dd>' + h(o.customerEmail) + '</dd>' : '') + '</dl>' + docsBlock(o) + '<h4 class="sub-h">Timeline</h4>' + site.timeline(o.timeline || []) + '</div>' +
       '<form class="od-r" id="uf" novalidate><h4 class="sub-h first">Update order</h4><div class="field"><label>Status</label><div class="status-pick">' + App.STATUSES.map(function (s) {
         return '<label class="sp' + (o.status === s ? ' on' : '') + '"><input type="radio" name="u-status" value="' + h(s) + '"' + (o.status === s ? ' checked' : '') + '>' + h(s) + '</label>';
       }).join('') + '</div></div>' +
@@ -170,6 +171,34 @@
       '<label class="check"><input type="checkbox" id="u-internal"> Internal note only (customer will not see the message)</label>' +
       '<div class="field"><label for="u-notes">Private admin notes</label><textarea class="input" id="u-notes" maxlength="3000" placeholder="Only admins see this">' + h(o.adminNotes || '') + '</textarea></div>' +
       '<div class="err" id="u-err"></div><button class="btn block lg" id="u-save" type="submit">' + icon('check', 18) + ' Save update</button></form></div>', 'wide');
+  }
+  /* customer documents: list + one-click download (the file comes through the backend, so no Drive sharing is needed) */
+  function docsBlock(o) {
+    var docs = o.documents || [];
+    return '<h4 class="sub-h">' + icon('clip', 17) + ' Customer documents (' + docs.length + ')' +
+      (docs.length > 1 ? ' <button class="linkbtn" type="button" data-a="doc-all" data-id="' + h(o.orderId) + '">' + icon('download', 15) + ' Download all</button>' : '') + '</h4>' +
+      (docs.length ? '<ul class="doc-list">' + docs.map(function (d) {
+        return '<li class="doc-row"><span class="doc-ic">' + icon('file', 18) + '</span><span class="doc-n"><b>' + h(d.name) + '</b><small>' + h(App.fileSize(d.size)) + (d.at ? ' · ' + h(App.fmtDateTime(d.at)) : '') +
+          (d.url ? ' · <a href="' + h(d.url) + '" target="_blank" rel="noopener">Open in Drive</a>' : '') + '</small></span>' +
+          '<button class="btn sm" type="button" data-a="doc-dl" data-id="' + h(o.orderId) + '" data-doc="' + h(d.id) + '">' + icon('download', 15) + ' Download</button></li>';
+      }).join('') + '</ul>' : '<p class="muted small">The customer has not uploaded any documents for this order.</p>');
+  }
+  function downloadDoc(btn) {
+    if (btn.disabled) return Promise.resolve();
+    var orderId = btn.getAttribute('data-id'), docId = btn.getAttribute('data-doc'), keep = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Downloading...';
+    return App.api('getDocument', { orderId: orderId, docId: docId }, { retries: 1, timeout: 180000 }).then(function (r) {
+      App.saveBase64(r.data, r.name, r.mimeType);
+      btn.disabled = false; btn.innerHTML = icon('check', 15) + ' Downloaded';
+      setTimeout(function () { if (document.body.contains(btn)) btn.innerHTML = keep; }, 2500);
+    }, function (e) {
+      btn.disabled = false; btn.innerHTML = keep;
+      App.toast(e.code === 'OLD_BACKEND' ? 'Update the Apps Script backend to version 2.2 to download documents (SETUP-GUIDE.md, Part 1D-3).' : e.message, 'err');
+    });
+  }
+  function downloadAllDocs(id) {
+    var btns = Array.prototype.slice.call(document.querySelectorAll('[data-a="doc-dl"][data-id="' + id + '"]'));
+    return btns.reduce(function (p, b) { return p.then(function () { return downloadDoc(b); }); }, Promise.resolve());
   }
   function saveOrder() {
     var o = byId(A.detail); if (!o) return;
@@ -513,6 +542,8 @@
     switch (a) {
       case 'reload': A.err = ''; A.data = A.dirty ? A.data : null; App.loadAdmin(); break;
       case 'open-order': openOrder(t.getAttribute('data-id')); break;
+      case 'doc-dl': ev.preventDefault(); downloadDoc(t); break;
+      case 'doc-all': ev.preventDefault(); downloadAllDocs(t.getAttribute('data-id')); break;
       case 'filter-status': A.ofilter = t.getAttribute('data-status'); site.go('admin', 'orders'); break;
       case 'ofilter': A.ofilter = t.getAttribute('data-status'); root().querySelectorAll('[data-a="ofilter"]').forEach(function (c) { c.classList.toggle('on', c === t); }); renderOrderList(); break;
       case 'new-order': newOrderModal(); break;

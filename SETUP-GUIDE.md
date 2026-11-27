@@ -91,6 +91,16 @@ Version 2.1 of `Code.gs` adds online payment details on orders (`paymentMethod`,
 
 Until you do this, orders still work (the payment choice is written into the order's work details), and Bulk upload still works (it saves the whole catalogue instead), but the payment status column and the "I have paid" button need the new backend.
 
+### 1D-3. Update for version 2.2 (customer document upload) – do this once
+Version 2.2 lets customers **upload documents for printing / Xerox** with their order, and lets admins **download them from the admin panel** with one click. The files are saved privately in **your Google Drive**, in a folder called **"One Stop Solution - Customer documents"** (one sub-folder per order, e.g. `SR-0012`). After the website change is merged:
+1. Paste the new `apps-script/Code.gs` into Apps Script (step 1B) and click Save.
+2. Run **`setup`** once (step 1C). Google asks for permission again because the script now also uses **Google Drive**: click **Review permissions → your account → Advanced → Go to (project) → Allow**. `setup` adds the `documents` column to the `Orders` tab (your data is kept) and creates the Drive folder. The other admin e-mail in `ADMIN_EMAILS` is added as an editor of the folder.
+3. **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy** (step 1D). Same `/exec` address, so `config.js` does not change.
+
+Rules built in: PDF, Word (DOC/DOCX), JPG, PNG, Excel and PowerPoint files; up to **10 MB per file** and **10 files per order** (change `MAX_UPLOAD_MB` / `MAX_FILES_PER_ORDER` at the top of `Code.gs`). The backend checks the real file type, not just the name. Customers can add files while placing the order, or later from **Track order / My orders** until the order is Completed or Cancelled. Only the customer with the order's private tracking link / mobile number can upload, and only admins can download.
+
+Until you do this, orders still work, but uploads show "The shop has not switched on online uploads yet" and customers can send files on WhatsApp instead.
+
 ### 1E. Optional: tracking links in e-mails
 On the website, go to Admin → **Settings** and fill in **Website address**, for example `https://www.yourshop.in/`. Customer e-mails will then include a "Track your order" link.
 
@@ -299,7 +309,7 @@ After adding properties you don't need to redeploy, because properties are read 
 
 1. Open the website, click **Sign in** (or **Staff login** in the footer), and choose your Google account.
 2. **Dashboard:** today's picture.
-3. **Orders:** tap an order, then choose a status (Pending → Confirmed → In Progress → Ready → Completed), enter the bill amount and amount paid, type a message for the customer if you like, and tap **Save update**. The customer is e-mailed automatically. Tap **WhatsApp customer** to send them a WhatsApp too.
+3. **Orders:** a 📎 number in the *Service* column means the customer uploaded documents. Open the order and use **Download** next to each file (or **Download all**) under **Customer documents**. **Open in Drive** opens the same file in Google Drive. Then choose a status (Pending → Confirmed → In Progress → Ready → Completed), enter the bill amount and amount paid, type a message for the customer if you like, and tap **Save update**. The customer is e-mailed automatically. Tap **WhatsApp customer** to send them a WhatsApp too.
 4. **New order:** for walk-in or phone customers.
 5. **Catalogue:** edit prices, add services, and hide anything not available today. Then tap **Save catalogue**.
 6. **Settings:** phone, WhatsApp, address, hours, UPI and announcement bar.
@@ -315,4 +325,6 @@ After adding properties you don't need to redeploy, because properties are read 
 | "This sign-in was not made for this website" | The Client ID in `Code.gs` and `config.js` don't match. |
 | "This Google account is not an admin" | Sign in with dataongole@gmail.com or rajub.369@gmail.com, or add the e-mail to `ADMIN_EMAILS` in `Code.gs` and redeploy. |
 | Changes on GitHub don't show | Wait 1–2 minutes, then hard-refresh with Ctrl+F5. On a phone, close and reopen the tab. |
+| Customer upload says "not switched on yet" / Download says "Update the Apps Script backend" | Do Part 1D-3 (paste `Code.gs` v2.2, run `setup`, allow Drive, deploy a new version). |
+| Download says the file was not found in Google Drive | The file was deleted or is in the Drive trash. Restore it from the Drive trash, or ask the customer to upload it again. |
 | E-mails not arriving | Check the Spam folder. In Apps Script, open **Executions** to see errors. The daily Gmail limit may be reached. |
