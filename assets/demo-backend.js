@@ -63,6 +63,12 @@
   }
   function load() { var d; try { d = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {} if (!d) { d = seed(); save(d); } return d; }
   function save(d) { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) {} }
+  /* demo documents: kept in memory, and in localStorage when there is room (browsers allow only a few MB) */
+  var FILEKEY = 'oss_demo_file_', files = {};
+  var DOC_EXT = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'xls', 'xlsx', 'ppt', 'pptx'];
+  function putFile(id, data) { files[id] = data; if (data.length < 1500000) { try { localStorage.setItem(FILEKEY + id, data); } catch (e) {} } }
+  function getFile(id) { if (files[id]) return files[id]; try { return localStorage.getItem(FILEKEY + id); } catch (e) { return null; } }
+  function dropFiles() { files = {}; try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(FILEKEY) === 0) localStorage.removeItem(k); }); } catch (e) {} }
   function user(token) {
     var m = /^demo:(.+)$/.exec(token || ''); if (!m) return null;
     var email = m[1].toLowerCase();
@@ -72,9 +78,10 @@
     var q = Number(o.amountQuoted) || 0, p = Number(o.amountPaid) || 0;
     return { orderId: o.orderId, createdAt: o.createdAt, updatedAt: o.updatedAt, status: o.status, service: o.serviceName, itemName: o.itemName, unitPrice: o.unitPrice, unit: o.unit,
       quantity: o.quantity, estimate: o.estimate, description: o.description, preferredDate: o.preferredDate, preferredTime: o.preferredTime, amountQuoted: q, amountPaid: p,
-      balance: Math.max(0, q - p), trackKey: o.trackKey, paymentMethod: o.paymentMethod || 'COD', paymentStatus: o.paymentStatus || 'COD', paymentRef: o.paymentRef || '', timeline: o.timeline.filter(function (t) { return t.visible !== false; }) };
+      balance: Math.max(0, q - p), trackKey: o.trackKey, paymentMethod: o.paymentMethod || 'COD', paymentStatus: o.paymentStatus || 'COD', paymentRef: o.paymentRef || '', timeline: o.timeline.filter(function (t) { return t.visible !== false; }),
+      documents: (o.documents || []).map(function (x) { return { name: x.name, size: x.size, at: x.at }; }) };
   }
-  function adm(o) { var c = clone(o); c.amountQuoted = Number(c.amountQuoted) || 0; c.amountPaid = Number(c.amountPaid) || 0; c.balance = Math.max(0, c.amountQuoted - c.amountPaid); return c; }
+  function adm(o) { var c = clone(o); c.documents = c.documents || []; c.amountQuoted = Number(c.amountQuoted) || 0; c.amountPaid = Number(c.amountPaid) || 0; c.balance = Math.max(0, c.amountQuoted - c.amountPaid); return c; }
   function find(d, id) { id = String(id || '').trim().toUpperCase(); for (var i = 0; i < d.orders.length; i++) if (d.orders[i].orderId === id) return d.orders[i]; return null; }
   function mobile(v) { var x = String(v || '').replace(/\D/g, ''); if (x.length === 12 && x.indexOf('91') === 0) x = x.slice(2); return /^[6-9]\d{9}$/.test(x) ? x : ''; }
   function notify(d, to, subject, via) {
@@ -132,6 +139,36 @@
         notify(d, admins().join(', '), 'Payment reported for ' + o.orderId + ' - UTR ' + ref); save(d);
         return { ok: true, data: pub(o) };
       }
+      case 'uploadDocument': {
+        o = find(d, p.orderId);
+        if (!o || !p.key || p.key !== o.trackKey) return err('NOT_FOUND', 'Order not found. Please refresh the page and try again.');
+        if (o.status === 'Completed' || o.status === 'Cancelled') return err('INVALID', 'This order is ' + o.status.toLowerCase() + '. Please place a new order to send more documents.');
+        o.documents = o.documents || [];
+        var same = o.documents.filter(function (x) { return p.uploadRef && x.ref === p.uploadRef; })[0];
+        if (same) return { ok: true, data: { orderId: o.orderId, document: { name: same.name, size: same.size, at: same.at }, count: o.documents.length, duplicate: true } };
+        if (o.documents.length >= 10) return err('LIMIT', 'You can upload up to 10 files per order. Please send other files on WhatsApp.');
+        var name = String(p.name || 'document').slice(0, 120), ext = (/\.([a-z0-9]{1,5})$/i.exec(name) || [])[1];
+        if (!ext || DOC_EXT.indexOf(ext.toLowerCase()) < 0) return err('INVALID', '"' + name + '" is not supported. Please upload PDF, Word (DOC/DOCX), Excel, PowerPoint, JPG or PNG files.');
+        var data = String(p.data || ''), size = Math.floor(data.length * 3 / 4);
+        if (!data) return err('INVALID', 'The file "' + name + '" is empty.');
+        if (size > 10 * 1024 * 1024 + 4) return err('INVALID', '"' + name + '" is larger than 10 MB.');
+        var doc = { id: 'demo-' + key16(), name: name, size: Number(p.size) || size, mimeType: p.mimeType || 'application/octet-stream', at: now(), url: '', ref: p.uploadRef || '' };
+        putFile(doc.id, data);
+        o.documents.push(doc); o.updatedAt = doc.at;
+        o.timeline.push({ at: doc.at, type: 'document', message: 'Document uploaded: ' + name + ' (' + Math.max(1, Math.round(doc.size / 1024)) + ' KB)', visible: true });
+        save(d);
+        return { ok: true, data: { orderId: o.orderId, document: { name: doc.name, size: doc.size, at: doc.at }, count: o.documents.length } };
+      }
+      case 'getDocument': {
+        if ((deny = needAdmin())) return deny;
+        o = find(d, p.orderId);
+        if (!o) return err('NOT_FOUND', 'Order not found.');
+        var dd = (o.documents || []).filter(function (x) { return x.id === p.docId; })[0];
+        if (!dd) return err('NOT_FOUND', 'This document is not attached to order ' + o.orderId + '.');
+        var b64 = getFile(dd.id);
+        if (!b64) return err('NOT_FOUND', 'Demo mode: "' + dd.name + '" was too big to keep in this browser after a reload. Upload it again to test.');
+        return { ok: true, data: { orderId: o.orderId, docId: dd.id, name: dd.name, mimeType: dd.mimeType, size: dd.size, data: b64 } };
+      }
       case 'myOrders':
         if (!u) return err('AUTH', 'Please sign in.');
         return { ok: true, data: { user: u, orders: d.orders.filter(function (x) { return x.customerEmail === u.email || x.email === u.email; }).map(pub) } };
@@ -182,9 +219,9 @@
         notify(d, u.email, 'Test e-mail from your website'); save(d);
         return { ok: true, data: { sentTo: u.email, channels: { email: true } } };
       case 'demoReset':
-        localStorage.removeItem(KEY); load(); return { ok: true, data: true };
+        localStorage.removeItem(KEY); dropFiles(); load(); return { ok: true, data: true };
       default: return err('INVALID', 'Unknown action: ' + p.action);
     }
   }
-  window.DemoBackend = { handle: handle, mergeItems: mergeItems, reset: function () { localStorage.removeItem(KEY); } };
+  window.DemoBackend = { handle: handle, mergeItems: mergeItems, reset: function () { localStorage.removeItem(KEY); dropFiles(); } };
 })();
