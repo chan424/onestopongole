@@ -98,7 +98,7 @@
     function once() {
       if (App.demo) return wait(180).then(function () { return window.DemoBackend.handle(body); });
       var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 45000);
+      var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, opts.timeout || 45000);
       return fetch(App.cfg.API_URL, {
         method: 'POST', body: body, redirect: 'follow', signal: ctrl ? ctrl.signal : undefined,
         headers: { 'Content-Type': 'text/plain;charset=utf-8' }   // "simple" request: no CORS pre-flight for Apps Script
@@ -120,6 +120,46 @@
       });
     }
     return attempt(0);
+  };
+
+  /* ---------- customer documents (printing / Xerox files) ---------- */
+  App.DOCS = {
+    EXT: ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'xls', 'xlsx', 'ppt', 'pptx'],
+    ACCEPT: '.pdf,.doc,.docx,.jpg,.jpeg,.png,.xls,.xlsx,.ppt,.pptx,application/pdf,image/jpeg,image/png',
+    MAX_MB: 10, MAX_FILES: 10, LABEL: 'PDF, Word, JPG or PNG (also Excel / PowerPoint)'
+  };
+  App.fileSize = function (n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+    return (Math.round(n / 104857.6) / 10) + ' MB';
+  };
+  App.docExt = function (name) { var m = /\.([A-Za-z0-9]{1,5})$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; };
+  /* returns '' when the file is OK, otherwise a message for the customer */
+  App.checkDoc = function (file) {
+    if (!file) return 'No file selected.';
+    if (App.DOCS.EXT.indexOf(App.docExt(file.name)) < 0) return '"' + file.name + '" is not supported. Use ' + App.DOCS.LABEL + '.';
+    if (!file.size) return '"' + file.name + '" is empty.';
+    if (file.size > App.DOCS.MAX_MB * 1024 * 1024) return '"' + file.name + '" is ' + App.fileSize(file.size) + '. The limit is ' + App.DOCS.MAX_MB + ' MB per file.';
+    return '';
+  };
+  /* File -> base64 text (without the "data:...;base64," prefix) */
+  App.readBase64 = function (file) {
+    return new Promise(function (ok, no) {
+      var rd = new FileReader();
+      rd.onload = function () { var v = String(rd.result || ''); ok(v.slice(v.indexOf(',') + 1)); };
+      rd.onerror = function () { no({ code: 'FILE', message: 'Could not read "' + file.name + '" on this device.' }); };
+      rd.readAsDataURL(file);
+    });
+  };
+  /* base64 text -> file download in the browser (one click, no new tab) */
+  App.saveBase64 = function (b64, name, mime) {
+    var bin = atob(String(b64 || '')), len = bin.length, bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+    var blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
+    if (window.navigator && window.navigator.msSaveOrOpenBlob) return window.navigator.msSaveOrOpenBlob(blob, name);
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name || 'document'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
   };
 
   /* ---------- sign-in (Google Identity Services; phone fallback; demo) ---------- */
@@ -219,6 +259,9 @@
     pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     download: '<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
+    upload: '<path d="M12 21V9M7 14l5-5 5 5M4 3h16"/>',
+    file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
+    clip: '<path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
     up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
     down: '<path d="M12 5v14M6 13l6 6 6-6"/>',
     chevron: '<path d="m6 9 6 6 6-6"/>',
