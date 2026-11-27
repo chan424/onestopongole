@@ -10,7 +10,7 @@ window.APP_CONFIG = {
 
   // 1. Google Apps Script Web App URL (it ends with /exec).
   //    Leave it "" to run the website in DEMO MODE (everything is saved only in your browser).
-  API_URL: "https://script.google.com/macros/s/AKfycbyGBz0sXR0dwVMcqB9Auqde_GbpHUxRi09taFuhZRY6snXXKUaezo8_U6DNZl_Hiu58/exec",
+  API_URL: "https://script.google.com/macros/s/AKfycbzK8pdb_UU_ua5SaRsVGU1GwFfU3gh02rX0aMp78hitkk1PLH0wkxFE5DhITdQO3nlIEg/exec",
 
   // 2. Google Sign-In "Client ID" (looks like 1234567890-abc123.apps.googleusercontent.com).
   //    Create it in Google Cloud Console - see SETUP-GUIDE.md, Part 2.
